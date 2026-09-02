@@ -102,14 +102,18 @@ Use the state boundary from https://github.com/etimbukafia/enterprise-agent-harn
 
 ### Agent memory
 
-Bounded conversational continuity.
+Memory has two layers:
+
+- bounded short-term conversation memory for the active support journey;
+- cross-session learned support memory through SenseLab at https://www.sense-lab.ai/.
 
 Good memory examples:
 
 - customer prefers a refund instead of replacement;
 - customer already supplied the order number;
 - customer means the second item in the order;
-- customer needs the order before Friday.
+- customer needs the order before Friday;
+- a recurring support pattern that has been reinforced by outcomes.
 
 Do not treat memory as authoritative business truth.
 
@@ -477,13 +481,40 @@ A reviewer can inspect the agent definition and understand its customer-service 
 
 ---
 
-# Phase 5 - Agent state, memory, and CX history
+# Phase 5 - Agent state, memory, learning, and CX history
 
 ## Goal
 
-Provide continuity without allowing stale memory to become business truth.
+Give the support agent useful continuity across turns and sessions without allowing memory to replace authoritative business data.
+
+Use a hybrid design:
+
+```text
+current workflow state
+  -> https://github.com/etimbukafia/enterprise-agent-harness StateStore
+
+short-term conversation continuity
+  -> bounded local/runtime memory
+
+cross-session learned support memory
+  -> SenseLab
+
+customer-service history
+  -> CX platform SQLite database
+
+authoritative commerce truth
+  -> mock-business HTTP API
+```
+
+SenseLab is an external memory and learning dependency. Integrate it behind a small CX-owned adapter rather than letting CX domain code depend directly on SenseLab SDK types.
+
+For the detailed implementation checklist, keep `plan/PHASE_5_STATE_MEMORY_AND_CX_HISTORY.md` as the Phase 5 companion specification.
 
 ## Phase 5A - Workflow state
+
+### Purpose
+
+Track the active support workflow for the current conversation or paused execution.
 
 Use the state boundary from https://github.com/etimbukafia/enterprise-agent-harness.
 
@@ -499,46 +530,267 @@ awaiting_approval
 
 ### Tasks
 
-- [ ] Define the state schema.
-- [ ] Bind state to trusted customer/session identity.
+- [ ] Define a typed workflow-state schema.
+- [ ] Bind state to trusted customer/session/conversation identity.
 - [ ] Persist active references between turns.
-- [ ] Clear case-specific state at the right lifecycle boundary.
+- [ ] Preserve paused approval state through the governed runtime path.
+- [ ] Clear case-specific state at the correct terminal boundary.
 - [ ] Test switching from one order to another in the same conversation.
+- [ ] Test customer/session isolation.
 
-## Phase 5B - Bounded agent memory
+## Phase 5B - Short-term conversation memory
 
-Use the memory boundary from https://github.com/etimbukafia/enterprise-agent-harness.
+### Purpose
 
-Memory may retain:
+Preserve bounded conversational continuity for the active support journey.
 
-- resolved references from earlier turns;
-- customer-stated preferences relevant to the current support journey;
-- compact turn summaries;
-- unresolved customer goals.
+Use the memory boundary from https://github.com/etimbukafia/enterprise-agent-harness for runtime-facing short-term memory.
 
-Memory must not become the source of truth for current order, payment, shipment, refund, or policy state.
+Good examples:
+
+- customer already supplied the order number;
+- customer means the second item in the order;
+- customer prefers refund rather than replacement for this case;
+- customer said the item is needed before Friday;
+- an earlier ambiguity was resolved to a specific order.
+
+Do not store changing business state as durable memory.
 
 ### Tasks
 
-- [ ] Define allowed memory item types.
+- [ ] Define allowed short-term memory item types.
 - [ ] Keep memory bounded.
-- [ ] Prefer summaries over full transcript duplication.
+- [ ] Prefer compact summaries over transcript duplication.
 - [ ] Store resolved conversational references.
 - [ ] Store useful customer-stated preferences.
+- [ ] Define retention after ticket resolution.
 - [ ] Test follow-up language such as:
   - "What about the other one?";
   - "Actually, refund it instead.";
   - "I mean the headphones order.".
+- [ ] Test that a fresh business-tool result overrides old remembered state.
 
-## Phase 5C - Customer history
+## Phase 5C - SenseLab adapter
 
-Keep previous ticket, escalation, resolution, and CSAT records in the CX database.
+### Purpose
 
-Do not write these records into free-form agent memory.
+Use https://www.sense-lab.ai/ for cross-session support memory and outcome-informed learning.
+
+Do not use SenseLab as the CX database, workflow state store, or source of business truth.
+
+### Application boundary
+
+Use a small application-owned port:
+
+```text
+cx_platform/memory/
+  port.py
+  local.py
+  senselab.py
+```
+
+A minimal contract is enough:
+
+```text
+search_relevant(...)
+write_memory(...)
+record_context(...)
+commit_outcome(...)
+explain_usage(...)
+```
+
+Do not mirror the entire external API.
+
+### Tasks
+
+- [ ] Define `MemoryPort` owned by the CX application.
+- [ ] Implement deterministic `LocalMemory` for tests and CI.
+- [ ] Implement `SenseLabMemory` behind the port.
+- [ ] Load credentials from environment configuration only.
+- [ ] Add finite timeouts and safe error mapping.
+- [ ] Make SenseLab optional for deterministic/offline mode.
+- [ ] Add fake-client integration tests.
+- [ ] Keep live SenseLab smoke tests opt-in and outside normal CI.
+
+## Phase 5D - Customer-specific cross-session memory
+
+### Purpose
+
+Retain a small set of durable customer preferences or interaction facts that are useful in later support sessions.
+
+Appropriate examples:
+
+```text
+customer generally prefers refunds over replacements
+customer prefers concise support explanations
+customer confirmed a standing communication preference
+```
+
+Do not infer a rich customer profile from every conversation.
+
+### Tasks
+
+- [ ] Define allowed durable customer-memory categories.
+- [ ] Scope reads/writes by trusted `customer_id`.
+- [ ] Preserve source conversation/execution provenance.
+- [ ] Promote only clearly confirmed, reusable information.
+- [ ] Avoid unnecessary sensitive data.
+- [ ] Add cross-session recall tests.
+- [ ] Add customer-isolation tests.
+- [ ] Add conflicting/superseded-preference tests.
+
+## Phase 5E - Shared support-agent learning
+
+### Purpose
+
+Allow the support agent to accumulate useful operational patterns across interactions.
+
+Examples:
+
+```text
+customers frequently misunderstand split-shipment wording
+shipping-outage explanations that include a clear next check reduce repeated questions
+damaged-item cases often need the affected order line confirmed first
+```
+
+These memories are advisory. They are not policy and they cannot grant authority.
+
+### Tasks
+
+- [ ] Define shared support-memory namespaces or entity paths.
+- [ ] Distinguish learned experiences/hypotheses from stable facts.
+- [ ] Map support capabilities to relevant memory searches.
+- [ ] Bound retrieval result count.
+- [ ] Apply confidence/relevance filters where supported.
+- [ ] Preserve memory IDs/versions/provenance in execution evidence where practical.
+- [ ] Test that learned memory cannot override business-tool results or policy.
+
+## Phase 5F - Outcome-informed learning
+
+### Purpose
+
+Connect observed CX outcomes to memories that influenced an execution.
+
+The CX platform remains authoritative for outcomes. SenseLab receives references/signals after the CX outcome exists.
+
+Expected flow:
+
+```text
+support execution
+  -> reads relevant SenseLab memories
+  -> uses governed business tools
+  -> CX platform records structured outcome
+  -> optional CSAT arrives
+  -> application commits outcome reference/signal to SenseLab
+```
+
+Do not equate every policy denial or dependency failure with a bad memory.
+
+### Tasks
+
+- [ ] Define which CX outcomes may produce SenseLab outcome signals.
+- [ ] Keep CX outcomes immutable in the CX database.
+- [ ] Commit external learning outcomes only after the CX outcome exists.
+- [ ] Treat CSAT as a separate signal.
+- [ ] Record outcome-propagation success/failure.
+- [ ] Test that SenseLab failure cannot corrupt the CX outcome.
+
+## Phase 5G - Memory provenance and explainability
+
+### Purpose
+
+Allow the system to answer which memories were read or written by an execution and which later outcomes related to them.
+
+Suggested CX-side reference data:
+
+```text
+execution_id
+memory_provider
+memory_entry_id_or_key
+memory_version
+memory_scope
+operation
+occurred_at
+```
+
+Do not duplicate entire external memory payloads unless there is a specific audit need.
+
+### Tasks
+
+- [ ] Link memory reads/writes to `execution_id`.
+- [ ] Link outcome commits to CX outcome IDs.
+- [ ] Make the memory provider visible in operator/debug inspection.
+- [ ] Add a small explain view only if inexpensive.
+- [ ] Keep private chain-of-thought out of memory evidence.
+
+## Phase 5H - CX history remains separate
+
+The CX database remains authoritative for:
+
+- previous tickets;
+- previous escalations;
+- previous resolutions;
+- previous CSAT;
+- conversation/message history;
+- structured outcomes.
+
+If the agent needs history, expose a typed CX-owned history read. Do not mirror every ticket or message into SenseLab.
+
+### Tasks
+
+- [ ] Keep CX history in SQLite.
+- [ ] Add a typed history query only when a scenario requires it.
+- [ ] Link memories to source CX records through IDs/provenance where applicable.
+
+## Phase 5I - Failure and fallback behavior
+
+SenseLab must not become a single point of failure for v0.1.
+
+Expected fallback:
+
+```text
+SenseLab available
+  -> retrieve bounded cross-session memory
+  -> continue normal governed execution
+
+SenseLab unavailable
+  -> record memory dependency failure
+  -> continue with workflow state + current conversation + business tools
+```
+
+### Tasks
+
+- [ ] Define timeout behavior.
+- [ ] Define safe empty-memory fallback.
+- [ ] Emit a CX memory-dependency event when useful.
+- [ ] Ensure memory failure cannot bypass policy or approval.
+- [ ] Test support with SenseLab disabled.
+- [ ] Test SenseLab timeout/failure.
+
+## Phase 5J - Acceptance tests
+
+- [ ] Same-session continuity keeps the active order/item reference.
+- [ ] Cross-session customer preference is recalled only for the same customer.
+- [ ] Fresh mock-business truth overrides stale memory.
+- [ ] Relevant shared support learning can be supplied as advisory context.
+- [ ] Policy remains authoritative even when memory suggests a common resolution.
+- [ ] CX outcomes can be linked back to memory usage for learning.
+- [ ] Customer support still works when SenseLab is unavailable.
 
 ## Exit criteria
 
-State, memory, CX history, and business truth remain separate in both code and tests.
+Phase 5 is complete when:
+
+- workflow state is owned through https://github.com/etimbukafia/enterprise-agent-harness;
+- short-term conversational continuity is bounded;
+- SenseLab is integrated behind a CX-owned adapter;
+- deterministic tests require no SenseLab account or network access;
+- customer-specific cross-session memory is isolated;
+- shared support learning remains advisory;
+- CX outcomes can feed explicit learning signals;
+- CX history remains authoritative in SQLite;
+- current business truth always overrides stale memory;
+- memory failure does not prevent the basic support workflow.
 
 ---
 
@@ -601,7 +853,7 @@ The instructions should be short and operational. The agent should know:
 - [ ] Register exact tool versions.
 - [ ] Register exact capability versions.
 - [ ] Register the small policy set.
-- [ ] Configure state and bounded memory.
+- [ ] Configure workflow state and the Phase 5 hybrid memory adapters.
 - [ ] Build the agent with the factory from https://github.com/etimbukafia/enterprise-agent-harness.
 - [ ] Map CX session/customer identity into trusted runtime principal context.
 - [ ] Execute the support agent from the CX conversation service.
@@ -1287,6 +1539,7 @@ AI-native-CX-platform/
 │       ├── api/
 │       ├── domain/
 │       ├── agent/
+│       ├── memory/
 │       ├── tools/
 │       ├── integrations/
 │       ├── services/
@@ -1373,25 +1626,29 @@ A strong final demonstration should look like this:
    policy,
    knowledge.
 
-7. The agent selects a valid resolution path.
+7. The agent can use bounded conversation memory and relevant SenseLab support memory as advisory context.
 
-8. The agent requests the allowed return/refund action.
+8. The agent selects a valid resolution path using current business truth and policy.
 
-9. If approval is required, the governed execution pauses.
+9. The agent requests the allowed return/refund action.
 
-10. The operator reviews and approves or rejects the exact action.
+10. If approval is required, the governed execution pauses.
 
-11. The governed execution resumes when appropriate.
+11. The operator reviews and approves or rejects the exact action.
 
-12. The customer receives the business-backed result.
+12. The governed execution resumes when appropriate.
 
-13. The ticket receives a structured outcome.
+13. The customer receives the business-backed result.
 
-14. The customer can submit CSAT.
+14. The ticket receives a structured outcome.
 
-15. The operator opens the ticket and sees the complete operational timeline.
+15. The customer can submit CSAT.
 
-16. CX events, runtime execution evidence, and business events remain linked by IDs.
+16. Eligible outcome signals can be linked back to relevant SenseLab memory usage without changing the authoritative CX outcome.
+
+17. The operator opens the ticket and sees the complete operational timeline.
+
+18. CX events, runtime execution evidence, memory references, and business events remain linked by IDs.
 ```
 
-That is the target platform. It is deliberately small, but it demonstrates a real AI-operated customer-service workflow with business actions, memory, governance, human control, outcomes, and usable operational evidence.
+That is the target platform. It is deliberately small, but it demonstrates a real AI-operated customer-service workflow with business actions, hybrid memory, governance, human control, outcomes, and usable operational evidence.
