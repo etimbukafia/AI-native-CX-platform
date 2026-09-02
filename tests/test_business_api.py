@@ -22,7 +22,7 @@ def test_delayed_delivery_exposes_business_truth_and_events() -> None:
 
 def test_scenario_activation_replaces_business_state() -> None:
     api = client()
-    response = api.post("/scenarios/cancellation/activate")
+    response = api.post("/scenarios/cancellation_before_shipment/activate")
     order = api.get("/orders/ord_001")
     cancellation = api.post("/orders/ord_001/cancel")
     assert response.status_code == 200
@@ -43,9 +43,9 @@ def test_shipping_outage_returns_dependency_failure_without_fake_state() -> None
 
 def test_refund_cannot_exceed_paid_amount() -> None:
     api = client()
-    api.post("/scenarios/refund_request/activate")
-    rejected = api.post("/refunds", json={"order_id": "ord_001", "amount": "100.00", "reason": "Damaged item"})
-    approved = api.post("/refunds", json={"order_id": "ord_001", "amount": "50.00", "reason": "Damaged item"})
+    api.post("/scenarios/refund_requires_approval/activate")
+    rejected = api.post("/refunds", json={"order_id": "ord_001", "payment_id": "pay_001", "amount": "200.00", "reason": "Damaged item"})
+    approved = api.post("/refunds", json={"order_id": "ord_001", "payment_id": "pay_001", "amount": "50.00", "reason": "Damaged item"})
     assert rejected.status_code == 422
     assert approved.status_code == 201
     assert approved.json()["status"] == "approved"

@@ -9,8 +9,10 @@ description = "Reference commerce business backend for an AI-native customer ser
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
   "uvicorn>=0.34,<1",
+  "enterprise-agent-harness @ git+https://github.com/etimbukafia/enterprise-agent-harness.git@22d844337d465eacb509b57af2bebba8ce39daeb",
 ]
 
 [project.optional-dependencies]
@@ -20,7 +22,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/mock_business"]
+packages = ["src/mock_business", "cx_platform"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

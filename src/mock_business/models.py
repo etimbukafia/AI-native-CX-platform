@@ -214,6 +214,7 @@ class ActiveScenario(BaseModel):
 
 class RefundRequest(BaseModel):
     order_id: str
+    payment_id: str
     amount: Decimal = Field(gt=0)
     reason: str = Field(min_length=1)
 
