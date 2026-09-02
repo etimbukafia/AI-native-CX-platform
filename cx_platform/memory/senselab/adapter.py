@@ -23,8 +23,8 @@ from ..models import (
     MemoryScope,
 )
 from ..port import MemoryConfigurationError, MemoryEvidenceSink
-from .senselab_http import SENSELAB_DEFAULT_URL, SenseLabHTTPClient
-from .senselab_mapping import (
+from .http import SENSELAB_DEFAULT_URL, SenseLabHTTPClient
+from .mapping import (
     build_context_request,
     build_explain_params,
     build_outcome_request,

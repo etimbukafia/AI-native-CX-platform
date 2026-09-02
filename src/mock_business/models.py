@@ -217,6 +217,7 @@ class RefundRequest(BaseModel):
     payment_id: str
     amount: Decimal = Field(gt=0)
     reason: str = Field(min_length=1)
+    approval_confirmed: bool = False
 
 
 class ReturnRequest(BaseModel):

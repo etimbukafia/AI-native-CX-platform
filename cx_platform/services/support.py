@@ -1,0 +1,899 @@
+"""Application service for one governed customer-support turn."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from enterprise_agent_harness import (
+    AgentOutcome,
+    ApprovalDecision,
+    ApprovalDecisionStatus,
+    ApprovalRequest,
+    ExecutionStateStatus,
+    InMemoryStateStore,
+    OutcomeStatus,
+    PrincipalContext,
+    RiskLevel,
+)
+from pydantic import BaseModel, ConfigDict, Field
+
+from cx_platform.agent import (
+    SUPPORT_AGENT_ID,
+    SUPPORT_AGENT_VERSION,
+    SupportAgentAssembly,
+    SupportMemoryStrategy,
+    assemble_support_agent,
+)
+from cx_platform.domain.models import (
+    ActorType,
+    ApprovalRecord,
+    ApprovalRecordStatus,
+    Conversation,
+    Escalation,
+    EscalationReason,
+    Message,
+    Ticket,
+    TicketStatus,
+)
+from cx_platform.memory import (
+    ConversationMemory,
+    MemoryEntry,
+    MemoryPort,
+    MemoryScope,
+    build_memory,
+)
+from cx_platform.persistence import CXRepositories
+from cx_platform.services.lifecycle import ConversationService
+from cx_platform.state import WorkflowStateManager, WorkflowStatePatch
+
+
+class SupportServiceError(ValueError):
+    """Raised when a support request cannot safely be handled."""
+
+
+class SupportTurnResult(BaseModel):
+    """Typed result returned to a CX caller after one support operation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    customer_id: str = Field(min_length=1)
+    ticket_id: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    customer_message_id: str | None = Field(default=None, min_length=1)
+    agent_message_id: str | None = Field(default=None, min_length=1)
+    execution_id: str = Field(min_length=1)
+    status: OutcomeStatus
+    ticket_status: TicketStatus
+    response: str = Field(min_length=1)
+    approval_id: str | None = Field(default=None, min_length=1)
+    escalation_id: str | None = Field(default=None, min_length=1)
+    outcome_id: str | None = Field(default=None, min_length=1)
+    trace_id: str | None = Field(default=None, min_length=1)
+    error_code: str | None = Field(default=None, min_length=1)
+
+
+class SupportService:
+    """Coordinate CX records around a Harness-built support agent."""
+
+    def __init__(
+        self,
+        *,
+        repositories: CXRepositories,
+        conversations: ConversationService,
+        assembly: SupportAgentAssembly,
+        memory: MemoryPort,
+        short_term_memory: ConversationMemory,
+        workflow_state: WorkflowStateManager,
+        tenant_id: str = "cx-platform",
+    ) -> None:
+        if conversations.repositories is not repositories:
+            raise ValueError(
+                "conversation and support services must share repositories"
+            )
+        if not tenant_id:
+            raise ValueError("tenant ID is required")
+        self.repositories = repositories
+        self.conversations = conversations
+        self.assembly = assembly
+        self.agent = assembly.agent
+        self.approval_broker = assembly.approval_broker
+        self.memory = memory
+        self.short_term_memory = short_term_memory
+        self.workflow_state = workflow_state
+        self.tenant_id = tenant_id
+
+    @property
+    def workflow_state_manager(self) -> WorkflowStateManager:
+        """Return the CX state manager bound to the real support identity."""
+
+        return self.workflow_state
+
+    def handle_message(
+        self,
+        conversation_id: str,
+        content: str,
+        *,
+        customer_id: str | None = None,
+        session_id: str | None = None,
+    ) -> SupportTurnResult:
+        """Store and process one customer message through Harness."""
+
+        _, ticket = self._case(conversation_id, customer_id)
+        if not content.strip():
+            raise SupportServiceError("message content is required")
+        if ticket.status in {TicketStatus.CLOSED, TicketStatus.RESOLVED}:
+            raise SupportServiceError("the ticket is no longer accepting messages")
+        if ticket.status is TicketStatus.WAITING_APPROVAL:
+            raise SupportServiceError("the ticket is waiting for an approval decision")
+
+        principal = self._principal(ticket.customer_id, session_id or conversation_id)
+        execution_id = self.assembly.factory.new_id("execution")
+        customer_message = self.conversations.append_message(
+            conversation_id,
+            actor_type=ActorType.CUSTOMER,
+            actor_id=ticket.customer_id,
+            content=content,
+            execution_id=execution_id,
+        )
+        if ticket.status is TicketStatus.OPEN:
+            self.conversations.transition_ticket(
+                ticket.ticket_id, TicketStatus.IN_PROGRESS
+            )
+        self.workflow_state.bind_execution(
+            principal,
+            customer_id=ticket.customer_id,
+            conversation_id=conversation_id,
+            execution_id=execution_id,
+        )
+        self._bind_memory(
+            principal,
+            execution_id,
+            content,
+            ticket.customer_id,
+            conversation_id,
+        )
+        try:
+            outcome = self.agent.execute(
+                principal,
+                content,
+                execution_id=execution_id,
+                environment="development",
+                max_risk_level=RiskLevel.HIGH,
+            )
+        except Exception as exc:  # noqa: BLE001 - an application boundary needs a safe handoff.
+            return self._application_failure(
+                ticket=ticket,
+                conversation_id=conversation_id,
+                principal=principal,
+                execution_id=execution_id,
+                customer_message_id=customer_message.message_id,
+                error=exc,
+            )
+        finally:
+            if self.assembly.memory_strategy is not None:
+                self.assembly.memory_strategy.clear(principal)
+
+        return self._record_outcome(
+            outcome,
+            ticket=ticket,
+            conversation_id=conversation_id,
+            principal=principal,
+            customer_message_id=customer_message.message_id,
+        )
+
+    def approve(
+        self,
+        execution_id: str,
+        *,
+        decided_by: str,
+        reason_code: str = "approved",
+    ) -> SupportTurnResult:
+        """Approve and resume the exact paused Harness execution."""
+
+        return self._decide(
+            execution_id,
+            decided_by=decided_by,
+            decision=ApprovalDecisionStatus.APPROVED,
+            reason_code=reason_code,
+        )
+
+    def reject(
+        self,
+        execution_id: str,
+        *,
+        decided_by: str,
+        reason_code: str = "rejected",
+    ) -> SupportTurnResult:
+        """Reject the exact paused action and close it through Harness."""
+
+        return self._decide(
+            execution_id,
+            decided_by=decided_by,
+            decision=ApprovalDecisionStatus.REJECTED,
+            reason_code=reason_code,
+        )
+
+    def approval_records(self, *, ticket_id: str | None = None) -> list[ApprovalRecord]:
+        """Return the small CX approval references for operator presentation."""
+
+        return self.repositories.approvals(ticket_id=ticket_id)
+
+    def _decide(
+        self,
+        execution_id: str,
+        *,
+        decided_by: str,
+        decision: ApprovalDecisionStatus,
+        reason_code: str,
+    ) -> SupportTurnResult:
+        if not decided_by.strip():
+            raise SupportServiceError("a reviewer identity is required")
+        records = self.repositories.approvals(execution_id=execution_id)
+        if not records:
+            raise SupportServiceError("approval reference was not found")
+        record = records[-1]
+        if record.status is not ApprovalRecordStatus.PENDING:
+            raise SupportServiceError("approval has already been decided")
+        conversation = self.repositories.conversation(record.conversation_id)
+        ticket = self.repositories.ticket(record.ticket_id)
+        if conversation is None or ticket is None:
+            raise SupportServiceError("approval case is no longer available")
+        principal = self._principal(record.customer_id, record.session_id)
+        try:
+            decision_value = self._broker_decide(
+                record.harness_request_id,
+                decision=decision,
+                decided_by=decided_by,
+                reason_code=reason_code,
+            )
+        except Exception as exc:
+            raise SupportServiceError("approval decision could not be recorded") from exc
+        status = self._approval_status(decision_value)
+        updated_record = record.model_copy(
+            update={
+                "status": status,
+                "harness_approval_id": decision_value.approval_id,
+                "decided_by": decision_value.decided_by,
+                "decision_reason": decision_value.reason_code,
+                "decided_at": decision_value.decided_at,
+            }
+        )
+        self.repositories.save_approval(updated_record)
+        self._bind_memory(
+            principal,
+            execution_id,
+            record.action_summary,
+            record.customer_id,
+            conversation.conversation_id,
+        )
+        try:
+            outcome = self.agent.runtime.resume(
+                execution_id,
+                decision_value,
+                principal=principal,
+            )
+        except Exception as exc:  # noqa: BLE001 - stale approval becomes a safe handoff.
+            return self._application_failure(
+                ticket=ticket,
+                conversation_id=conversation.conversation_id,
+                principal=principal,
+                execution_id=execution_id,
+                customer_message_id=self._message_for_execution(
+                    conversation.conversation_id,
+                    execution_id,
+                    actor_type=ActorType.CUSTOMER,
+                ),
+                error=exc,
+            )
+        finally:
+            if self.assembly.memory_strategy is not None:
+                self.assembly.memory_strategy.clear(principal)
+        return self._record_outcome(
+            outcome,
+            ticket=ticket,
+            conversation_id=conversation.conversation_id,
+            principal=principal,
+            customer_message_id=self._message_for_execution(
+                conversation.conversation_id,
+                execution_id,
+                actor_type=ActorType.CUSTOMER,
+            ),
+        )
+
+    def _record_outcome(
+        self,
+        outcome: AgentOutcome,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        principal: PrincipalContext,
+        customer_message_id: str | None,
+    ) -> SupportTurnResult:
+        request = self.agent.runtime.approval_request_for(outcome.execution_id)
+        if request is not None:
+            approval = self._save_pending_approval(
+                request,
+                ticket=ticket,
+                conversation_id=conversation_id,
+                principal=principal,
+            )
+            self.workflow_state.set_approval_waiting(
+                principal,
+                customer_id=ticket.customer_id,
+                conversation_id=conversation_id,
+                awaiting=True,
+                execution_id=outcome.execution_id,
+            )
+            self.conversations.transition_ticket(
+                ticket.ticket_id, TicketStatus.WAITING_APPROVAL
+            )
+            message = self._append_agent_message(
+                conversation_id,
+                execution_id=outcome.execution_id,
+                content="This request needs human approval before the action can run.",
+            )
+            return self._result(
+                outcome,
+                ticket_status=TicketStatus.WAITING_APPROVAL,
+                customer_id=ticket.customer_id,
+                ticket_id=ticket.ticket_id,
+                conversation_id=conversation_id,
+                customer_message_id=customer_message_id,
+                agent_message_id=message.message_id,
+                approval_id=approval.approval_id,
+                response="This request needs human approval before the action can run.",
+            )
+
+        if outcome.status is OutcomeStatus.COMPLETED:
+            return self._completed(
+                outcome,
+                ticket=ticket,
+                conversation_id=conversation_id,
+                principal=principal,
+                customer_message_id=customer_message_id,
+            )
+
+        if outcome.status is OutcomeStatus.NEEDS_INPUT:
+            return self._needs_input(
+                outcome,
+                ticket=ticket,
+                conversation_id=conversation_id,
+                principal=principal,
+                customer_message_id=customer_message_id,
+            )
+
+        reason = self._escalation_reason(outcome, self._failure_codes(outcome))
+        response = self._safe_response(outcome, reason)
+        escalation = self._escalate(
+            ticket=ticket,
+            conversation_id=conversation_id,
+            execution_id=outcome.execution_id,
+            principal=principal,
+            reason=reason,
+            summary=response,
+            outcome=outcome,
+        )
+        message = self._append_agent_message(
+            conversation_id,
+            execution_id=outcome.execution_id,
+            content=response,
+        )
+        return self._result(
+            outcome,
+            ticket_status=TicketStatus.ESCALATED,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            customer_message_id=customer_message_id,
+            agent_message_id=message.message_id,
+            escalation_id=escalation.escalation_id,
+            response=response,
+        )
+
+    def _needs_input(
+        self,
+        outcome: AgentOutcome,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        principal: PrincipalContext,
+        customer_message_id: str | None,
+    ) -> SupportTurnResult:
+        response = "I need more information before I can safely continue."
+        self.workflow_state.update(
+            principal,
+            customer_id=ticket.customer_id,
+            conversation_id=conversation_id,
+            patch=WorkflowStatePatch(),
+            status=ExecutionStateStatus.PAUSED,
+            execution_id=outcome.execution_id,
+        )
+        message = self._append_agent_message(
+            conversation_id,
+            execution_id=outcome.execution_id,
+            content=response,
+        )
+        return self._result(
+            outcome,
+            ticket_status=TicketStatus.IN_PROGRESS,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            customer_message_id=customer_message_id,
+            agent_message_id=message.message_id,
+            response=response,
+        )
+
+    def _completed(
+        self,
+        outcome: AgentOutcome,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        principal: PrincipalContext,
+        customer_message_id: str | None,
+    ) -> SupportTurnResult:
+        current_ticket = self.repositories.ticket(ticket.ticket_id) or ticket
+        if current_ticket.status is TicketStatus.ESCALATED:
+            escalation = self._latest_escalation(ticket.ticket_id)
+            if escalation is not None:
+                escalation = self.repositories.save_escalation(
+                    escalation.model_copy(
+                        update={
+                            "conversation_id": conversation_id,
+                            "execution_id": outcome.execution_id,
+                            "customer_goal": ticket.reason,
+                            "actions_attempted": [
+                                call.tool_id for call in outcome.tool_calls
+                            ],
+                            "tool_result_refs": outcome.evidence_ids,
+                        }
+                    )
+                )
+            self.workflow_state.clear_case(
+                principal,
+                customer_id=ticket.customer_id,
+                conversation_id=conversation_id,
+                terminal_status=ExecutionStateStatus.ESCALATED,
+            )
+            response = "I have handed this request to a human support specialist."
+            message = self._append_agent_message(
+                conversation_id,
+                execution_id=outcome.execution_id,
+                content=response,
+            )
+            return self._result(
+                outcome,
+                ticket_status=TicketStatus.ESCALATED,
+                customer_id=ticket.customer_id,
+                ticket_id=ticket.ticket_id,
+                conversation_id=conversation_id,
+                customer_message_id=customer_message_id,
+                agent_message_id=message.message_id,
+                escalation_id=escalation.escalation_id if escalation else None,
+                response=response,
+            )
+
+        resolved = self.conversations.resolve(
+            ticket.ticket_id,
+            resolution_code="AGENT_COMPLETED",
+            outcome_type="support_resolved",
+            metadata={
+                "execution_id": outcome.execution_id,
+                "harness_outcome_id": outcome.outcome_id,
+                "tool_ids": [call.tool_id for call in outcome.tool_calls],
+                "evidence_ids": outcome.evidence_ids,
+            },
+        )
+        outcome_id = self.repositories.outcomes(ticket.ticket_id)[-1].outcome_id
+        self.workflow_state.clear_case(
+            principal,
+            customer_id=ticket.customer_id,
+            conversation_id=conversation_id,
+            terminal_status=ExecutionStateStatus.COMPLETED,
+        )
+        response = outcome.summary
+        message = self._append_agent_message(
+            conversation_id,
+            execution_id=outcome.execution_id,
+            content=response,
+        )
+        self.short_term_memory.clear_after_resolution(
+            customer_id=ticket.customer_id,
+            conversation_id=conversation_id,
+            session_id=principal.session_id,
+        )
+        return self._result(
+            outcome,
+            ticket_status=resolved.status,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            customer_message_id=customer_message_id,
+            agent_message_id=message.message_id,
+            outcome_id=outcome_id,
+            response=response,
+        )
+
+    def _application_failure(
+        self,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        principal: PrincipalContext,
+        execution_id: str,
+        customer_message_id: str | None,
+        error: Exception,
+    ) -> SupportTurnResult:
+        reason = (
+            EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE
+            if "depend" in str(error).lower() or "transport" in str(error).lower()
+            else EscalationReason.AGENT_UNCERTAIN
+        )
+        response = self._safe_response(None, reason)
+        escalation = self._escalate(
+            ticket=ticket,
+            conversation_id=conversation_id,
+            execution_id=execution_id,
+            principal=principal,
+            reason=reason,
+            summary=response,
+            outcome=None,
+        )
+        self.workflow_state.clear_case(
+            principal,
+            customer_id=ticket.customer_id,
+            conversation_id=conversation_id,
+            terminal_status=ExecutionStateStatus.ESCALATED,
+        )
+        message = self._append_agent_message(
+            conversation_id,
+            execution_id=execution_id,
+            content=response,
+        )
+        return SupportTurnResult(
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            customer_message_id=customer_message_id,
+            agent_message_id=message.message_id,
+            execution_id=execution_id,
+            status=OutcomeStatus.FAILED,
+            ticket_status=TicketStatus.ESCALATED,
+            response=response,
+            escalation_id=escalation.escalation_id,
+            error_code="support_execution_failed",
+        )
+
+    def _escalate(
+        self,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        execution_id: str,
+        principal: PrincipalContext,
+        reason: EscalationReason,
+        summary: str,
+        outcome: AgentOutcome | None,
+    ) -> Escalation:
+        current_ticket = self.repositories.ticket(ticket.ticket_id) or ticket
+        if current_ticket.status is TicketStatus.ESCALATED:
+            latest = self._latest_escalation(ticket.ticket_id)
+            if latest is not None:
+                return latest
+        actions = [call.tool_id for call in outcome.tool_calls] if outcome else []
+        refs = list(outcome.evidence_ids) if outcome else []
+        return self.conversations.escalate(
+            ticket.ticket_id,
+            reason=reason,
+            summary=summary,
+            conversation_id=conversation_id,
+            execution_id=execution_id,
+            customer_goal=ticket.reason,
+            actions_attempted=actions,
+            tool_result_refs=refs,
+        )
+
+    def _save_pending_approval(
+        self,
+        request: ApprovalRequest,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        principal: PrincipalContext,
+    ) -> ApprovalRecord:
+        existing = self.repositories.approvals(execution_id=request.execution_id)
+        for record in existing:
+            if record.harness_request_id == request.request_id:
+                return record
+        action = request.action.tool_call
+        record = ApprovalRecord(
+            approval_id=self.assembly.factory.new_id("approval"),
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            execution_id=request.execution_id,
+            session_id=principal.session_id,
+            harness_request_id=request.request_id,
+            action_digest=request.action_digest,
+            tool_id=action.tool_id,
+            action_summary=f"Review {action.tool_id} action {request.action_digest}.",
+            requested_at=request.created_at,
+        )
+        return self.repositories.save_approval(record)
+
+    def _bind_memory(
+        self,
+        principal: PrincipalContext,
+        execution_id: str,
+        query: str,
+        customer_id: str,
+        conversation_id: str,
+    ) -> None:
+        strategy = self.assembly.memory_strategy
+        if strategy is None:
+            return
+        customer_entries = self._search_memory(
+            execution_id=execution_id,
+            scope=MemoryScope.CUSTOMER,
+            query=query,
+            customer_id=customer_id,
+        )
+        shared_entries = self._search_memory(
+            execution_id=execution_id,
+            scope=MemoryScope.SHARED_SUPPORT,
+            query=query,
+            capability_id="customer_support",
+        )
+        strategy.bind(
+            principal,
+            customer_id=customer_id,
+            conversation_id=conversation_id,
+            entries=tuple([*customer_entries, *shared_entries][:6]),
+        )
+
+    def _search_memory(
+        self,
+        *,
+        execution_id: str,
+        scope: MemoryScope,
+        query: str,
+        customer_id: str | None = None,
+        capability_id: str | None = None,
+    ) -> list[MemoryEntry]:
+        try:
+            return self.memory.search_relevant(
+                execution_id=execution_id,
+                scope=scope,
+                query=query,
+                customer_id=customer_id,
+                capability_id=capability_id,
+                limit=3,
+            )
+        except Exception:  # noqa: BLE001 - memory is advisory and must not block support.
+            return []
+
+    def _case(
+        self,
+        conversation_id: str,
+        customer_id: str | None,
+    ) -> tuple[Conversation, Ticket]:
+        conversation = self.repositories.conversation(conversation_id)
+        if conversation is None:
+            raise SupportServiceError("conversation was not found")
+        if customer_id is not None and customer_id != conversation.customer_id:
+            raise SupportServiceError("customer does not own this conversation")
+        ticket = self.repositories.ticket(conversation.ticket_id)
+        if ticket is None or ticket.customer_id != conversation.customer_id:
+            raise SupportServiceError("conversation ticket is invalid")
+        return conversation, ticket
+
+    def _principal(self, customer_id: str, session_id: str) -> PrincipalContext:
+        return PrincipalContext(
+            principal_id=customer_id,
+            tenant_id=self.tenant_id,
+            session_id=session_id,
+        )
+
+    def _append_agent_message(
+        self, conversation_id: str, *, execution_id: str, content: str
+    ) -> Message:
+        return self.conversations.append_message(
+            conversation_id,
+            actor_type=ActorType.AI_AGENT,
+            actor_id=SUPPORT_AGENT_ID,
+            content=content,
+            execution_id=execution_id,
+        )
+
+    def _message_for_execution(
+        self,
+        conversation_id: str,
+        execution_id: str,
+        *,
+        actor_type: ActorType,
+    ) -> str | None:
+        for message in reversed(self.repositories.messages(conversation_id)):
+            if (
+                message.execution_id == execution_id
+                and message.actor_type is actor_type
+            ):
+                return message.message_id
+        return None
+
+    def _latest_escalation(self, ticket_id: str) -> Escalation | None:
+        values = self.repositories.escalations(ticket_id)
+        return values[-1] if values else None
+
+    def _broker_decide(
+        self,
+        request_id: str,
+        *,
+        decision: ApprovalDecisionStatus,
+        decided_by: str,
+        reason_code: str,
+    ) -> ApprovalDecision:
+        method_name = (
+            "approve" if decision is ApprovalDecisionStatus.APPROVED else "reject"
+        )
+        method = getattr(self.approval_broker, method_name, None)
+        if not callable(method):
+            raise SupportServiceError(
+                "configured approval broker cannot record decisions"
+            )
+        return method(request_id, decided_by=decided_by, reason_code=reason_code)
+
+    @staticmethod
+    def _approval_status(decision: ApprovalDecision) -> ApprovalRecordStatus:
+        mapping = {
+            ApprovalDecisionStatus.APPROVED: ApprovalRecordStatus.APPROVED,
+            ApprovalDecisionStatus.REJECTED: ApprovalRecordStatus.REJECTED,
+            ApprovalDecisionStatus.REQUEST_CHANGES: ApprovalRecordStatus.REQUEST_CHANGES,
+            ApprovalDecisionStatus.EXPIRED: ApprovalRecordStatus.EXPIRED,
+        }
+        return mapping[decision.status]
+
+    def _failure_codes(self, outcome: AgentOutcome) -> set[str]:
+        return {
+            record.error_code
+            for record in self.assembly.tools.execution_records
+            if record.execution_id == outcome.execution_id
+            and record.error_code is not None
+        }
+
+    @staticmethod
+    def _escalation_reason(
+        outcome: AgentOutcome,
+        failure_codes: set[str],
+    ) -> EscalationReason:
+        if outcome.error_code in {"direct_prompt_injection", "unsupported_request"}:
+            return EscalationReason.UNSUPPORTED_REQUEST
+        if "business_rule_rejected" in failure_codes:
+            return EscalationReason.UNSUPPORTED_REQUEST
+        if "business_approval_still_required" in failure_codes:
+            return EscalationReason.ACTION_REQUIRES_HUMAN
+        if outcome.error_code == "approval_rejected":
+            return EscalationReason.ACTION_REQUIRES_HUMAN
+        if outcome.error_code in {
+            "policy_denied",
+            "permission_denied",
+            "required_permission_missing",
+            "tool_not_authorized",
+            "tool_not_in_capability",
+            "tool_version_not_authorized",
+            "tool_not_in_execution_allowlist",
+            "runtime_authorization_failed",
+        }:
+            return EscalationReason.POLICY_CONFLICT
+        if outcome.error_code in {
+            "tool_failed",
+            "all_tools_failed",
+            "dependency_unavailable",
+            "transport_failure",
+            "provider_failed",
+            "provider_error",
+            "provider_timeout",
+            "provider_output_invalid",
+        } or any(call.result_status.value == "failed" for call in outcome.tool_calls):
+            return EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE
+        if outcome.status is OutcomeStatus.REFUSED:
+            return EscalationReason.POLICY_CONFLICT
+        return EscalationReason.AGENT_UNCERTAIN
+
+    @staticmethod
+    def _safe_response(
+        outcome: AgentOutcome | None,
+        reason: EscalationReason,
+    ) -> str:
+        if reason is EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE:
+            return (
+                "I could not verify the current business information. "
+                "I have handed this request to a human support specialist."
+            )
+        if reason is EscalationReason.POLICY_CONFLICT:
+            return "I cannot complete that action under the current support policy. I have handed this request to a human support specialist."
+        if reason is EscalationReason.UNSUPPORTED_REQUEST:
+            return "I cannot safely handle that request. I have handed it to a human support specialist."
+        if outcome is not None and outcome.error_code == "approval_rejected":
+            return "The reviewed action was rejected. I have handed this request to a human support specialist."
+        return "I could not safely complete this request. I have handed it to a human support specialist."
+
+    def _result(
+        self,
+        outcome: AgentOutcome,
+        *,
+        ticket_status: TicketStatus,
+        customer_id: str,
+        ticket_id: str,
+        conversation_id: str,
+        customer_message_id: str | None,
+        agent_message_id: str | None,
+        response: str,
+        approval_id: str | None = None,
+        escalation_id: str | None = None,
+        outcome_id: str | None = None,
+    ) -> SupportTurnResult:
+        return SupportTurnResult(
+            customer_id=customer_id,
+            ticket_id=ticket_id,
+            conversation_id=conversation_id,
+            customer_message_id=customer_message_id,
+            agent_message_id=agent_message_id,
+            execution_id=outcome.execution_id,
+            status=outcome.status,
+            ticket_status=ticket_status,
+            response=response,
+            approval_id=approval_id,
+            escalation_id=escalation_id,
+            outcome_id=outcome_id,
+            trace_id=outcome.trace_id,
+            error_code=outcome.error_code,
+        )
+
+
+def build_support_service(
+    client,
+    conversations: ConversationService,
+    *,
+    repositories: CXRepositories | None = None,
+    memory: MemoryPort | None = None,
+    short_term_memory: ConversationMemory | None = None,
+    workflow_state_store=None,
+    tenant_id: str = "cx-platform",
+    **agent_options: Any,
+) -> SupportService:
+    """Build the support service with the real agent and Phase 5 adapters."""
+
+    selected_repositories = repositories or conversations.repositories
+    selected_short_term = short_term_memory or ConversationMemory()
+    selected_memory = memory or build_memory(evidence_sink=selected_repositories)
+    strategy = SupportMemoryStrategy(selected_short_term)
+    assembly = assemble_support_agent(
+        client,
+        conversations,
+        memory_strategy=strategy,
+        **agent_options,
+    )
+    workflow_store = workflow_state_store or InMemoryStateStore()
+    workflow_state = WorkflowStateManager(
+        workflow_store,
+        agent_id=SUPPORT_AGENT_ID,
+        agent_version=SUPPORT_AGENT_VERSION,
+    )
+    return SupportService(
+        repositories=selected_repositories,
+        conversations=conversations,
+        assembly=assembly,
+        memory=selected_memory,
+        short_term_memory=selected_short_term,
+        workflow_state=workflow_state,
+        tenant_id=tenant_id,
+    )
+
+
+__all__ = [
+    "SupportService",
+    "SupportServiceError",
+    "SupportTurnResult",
+    "build_support_service",
+]

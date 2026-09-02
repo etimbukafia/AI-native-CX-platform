@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from decimal import Decimal
 
-from enterprise_agent_harness import ExecutionContext, RiskLevel, ToolDefinition, ToolKind, ToolRegistry
+from enterprise_agent_harness import (
+    ExecutionContext,
+    RiskLevel,
+    ToolDefinition,
+    ToolKind,
+    ToolRegistry,
+    ToolResult,
+    ToolResultStatus,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 from cx_platform.domain.models import EscalationReason, EscalationStatus
@@ -63,7 +71,14 @@ class RefundInput(Contract):
 
 
 class EscalationInput(Contract):
-    ticket_id: str
+    ticket_id: str = Field(min_length=1)
+    conversation_id: str | None = Field(default=None, min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
+    customer_goal: str | None = Field(default=None, min_length=1)
+    active_order_id: str | None = Field(default=None, min_length=1)
+    active_item_id: str | None = Field(default=None, min_length=1)
+    actions_attempted: list[str] = Field(default_factory=list)
+    tool_result_refs: list[str] = Field(default_factory=list)
     reason: EscalationReason
     summary: str = Field(min_length=1)
 
@@ -98,13 +113,15 @@ class EscalationOutput(Contract):
     status: EscalationStatus
 
 
-ToolHandler = Callable[[ExecutionContext, BaseModel], BaseModel]
+ToolHandler = Callable[[ExecutionContext, BaseModel], BaseModel | ToolResult]
 
 
 def build_support_tools(
     client: MockBusinessClient,
     conversations: ConversationService,
 ) -> ToolRegistry:
+    refund_tool: ToolDefinition | None = None
+
     def get_customer(_: ExecutionContext, arguments: CustomerIdInput) -> Customer:
         return client.get_customer(arguments.customer_id)
 
@@ -112,19 +129,25 @@ def build_support_tools(
         _: ExecutionContext,
         arguments: CustomerIdInput,
     ) -> CustomerOrdersOutput:
-        return CustomerOrdersOutput(orders=client.get_customer_orders(arguments.customer_id))
+        return CustomerOrdersOutput(
+            orders=client.get_customer_orders(arguments.customer_id)
+        )
 
     def get_order(_: ExecutionContext, arguments: OrderIdInput) -> Order:
         return client.get_order(arguments.order_id)
 
-    def get_order_lines(_: ExecutionContext, arguments: OrderIdInput) -> OrderLinesOutput:
+    def get_order_lines(
+        _: ExecutionContext, arguments: OrderIdInput
+    ) -> OrderLinesOutput:
         return OrderLinesOutput(order_lines=client.get_order_lines(arguments.order_id))
 
     def get_order_payments(
         _: ExecutionContext,
         arguments: OrderIdInput,
     ) -> OrderPaymentsOutput:
-        return OrderPaymentsOutput(payments=client.get_order_payments(arguments.order_id))
+        return OrderPaymentsOutput(
+            payments=client.get_order_payments(arguments.order_id)
+        )
 
     def get_shipment(_: ExecutionContext, arguments: OrderIdInput) -> Shipment:
         return client.get_shipment(arguments.order_id)
@@ -149,16 +172,43 @@ def build_support_tools(
     ) -> KnowledgeSearchOutput:
         return KnowledgeSearchOutput(articles=client.search_knowledge(arguments.topic))
 
-    def cancel_order(_: ExecutionContext, arguments: OrderIdInput) -> CancellationResult:
-        return client.cancel_order(arguments.order_id)
+    def cancel_order(
+        _: ExecutionContext, arguments: OrderIdInput
+    ) -> CancellationResult | ToolResult:
+        result = client.cancel_order(arguments.order_id)
+        if result.allowed:
+            return result
+        return ToolResult(
+            tool_id="cancel_order",
+            status=ToolResultStatus.FAILED,
+            error_code="business_rule_rejected",
+        )
 
     def request_return(_: ExecutionContext, arguments: ReturnInput) -> Return:
         request = ReturnRequest(**arguments.model_dump())
         return client.request_return(request)
 
-    def request_refund(_: ExecutionContext, arguments: RefundInput) -> Refund:
+    def request_refund(
+        context: ExecutionContext, arguments: RefundInput
+    ) -> Refund | ToolResult:
         request = RefundRequest(**arguments.model_dump())
-        return client.request_refund(request)
+        approved = False
+        if refund_tool is not None:
+            digest = refund_tool.action_digest(arguments.model_dump(mode="json"))
+            approved = digest in context.approved_action_digests
+        result = client.request_refund(request, approval_confirmed=approved)
+        result_status = result.status.lower()
+        if result_status in {"rejected", "pending_approval"}:
+            return ToolResult(
+                tool_id="request_refund",
+                status=ToolResultStatus.FAILED,
+                error_code=(
+                    "business_rule_rejected"
+                    if result_status == "rejected"
+                    else "business_approval_still_required"
+                ),
+            )
+        return result
 
     def escalate_to_human(
         _: ExecutionContext,
@@ -168,6 +218,13 @@ def build_support_tools(
             arguments.ticket_id,
             reason=arguments.reason,
             summary=arguments.summary,
+            conversation_id=arguments.conversation_id,
+            execution_id=arguments.execution_id,
+            customer_goal=arguments.customer_goal,
+            active_order_id=arguments.active_order_id,
+            active_item_id=arguments.active_item_id,
+            actions_attempted=arguments.actions_attempted,
+            tool_result_refs=arguments.tool_result_refs,
         )
         return EscalationOutput(
             escalation_id=escalation.escalation_id,
@@ -176,7 +233,13 @@ def build_support_tools(
         )
 
     tools = [
-        _tool("get_customer", "Get one business customer.", CustomerIdInput, Customer, get_customer),
+        _tool(
+            "get_customer",
+            "Get one business customer.",
+            CustomerIdInput,
+            Customer,
+            get_customer,
+        ),
         _tool(
             "get_customer_orders",
             "Get all orders for one business customer.",
@@ -199,7 +262,13 @@ def build_support_tools(
             OrderPaymentsOutput,
             get_order_payments,
         ),
-        _tool("get_shipment", "Get the shipment for one business order.", OrderIdInput, Shipment, get_shipment),
+        _tool(
+            "get_shipment",
+            "Get the shipment for one business order.",
+            OrderIdInput,
+            Shipment,
+            get_shipment,
+        ),
         _tool(
             "get_fulfillment_issues",
             "Get fulfillment issues for one business order.",
@@ -207,8 +276,20 @@ def build_support_tools(
             FulfillmentIssuesOutput,
             get_fulfillment_issues,
         ),
-        _tool("get_returns", "Get return records for one business order.", OrderIdInput, ReturnsOutput, get_returns),
-        _tool("get_policy", "Get one current business policy.", PolicyInput, Policy, get_policy),
+        _tool(
+            "get_returns",
+            "Get return records for one business order.",
+            OrderIdInput,
+            ReturnsOutput,
+            get_returns,
+        ),
+        _tool(
+            "get_policy",
+            "Get one current business policy.",
+            PolicyInput,
+            Policy,
+            get_policy,
+        ),
         _tool(
             "search_knowledge",
             "Search current business knowledge.",
@@ -253,6 +334,7 @@ def build_support_tools(
             risk=RiskLevel.MEDIUM,
         ),
     ]
+    refund_tool = next(tool for tool in tools if tool.tool_id == "request_refund")
     return ToolRegistry(tools)
 
 

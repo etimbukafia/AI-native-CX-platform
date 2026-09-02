@@ -72,6 +72,7 @@ class Message(BaseModel):
     actor_type: ActorType
     actor_id: str
     content: str = Field(min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
     created_at: datetime = Field(default_factory=now)
 
 
@@ -92,11 +93,51 @@ class Escalation(BaseModel):
     model_config = ConfigDict(frozen=True)
     escalation_id: str
     ticket_id: str
+    conversation_id: str | None = Field(default=None, min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
+    customer_goal: str | None = Field(default=None, min_length=1)
+    active_order_id: str | None = Field(default=None, min_length=1)
+    active_item_id: str | None = Field(default=None, min_length=1)
+    actions_attempted: list[str] = Field(default_factory=list)
+    tool_result_refs: list[str] = Field(default_factory=list)
     reason: EscalationReason
     summary: str = Field(min_length=1)
     status: EscalationStatus = EscalationStatus.OPEN
     created_at: datetime = Field(default_factory=now)
     resolved_at: datetime | None = None
+
+
+class ApprovalRecordStatus(StrEnum):
+    """CX view of one Harness approval request."""
+
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    REQUEST_CHANGES = "REQUEST_CHANGES"
+    EXPIRED = "EXPIRED"
+
+
+class ApprovalRecord(BaseModel):
+    """Minimal CX-owned reference to a governed Harness approval."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    approval_id: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1)
+    ticket_id: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    harness_request_id: str = Field(min_length=1)
+    action_digest: str = Field(min_length=1)
+    tool_id: str = Field(min_length=1)
+    action_summary: str = Field(min_length=1, max_length=500)
+    status: ApprovalRecordStatus = ApprovalRecordStatus.PENDING
+    harness_approval_id: str | None = Field(default=None, min_length=1)
+    decided_by: str | None = Field(default=None, min_length=1)
+    decision_reason: str | None = Field(default=None, min_length=1)
+    requested_at: datetime = Field(default_factory=now)
+    decided_at: datetime | None = None
 
 
 class Outcome(BaseModel):

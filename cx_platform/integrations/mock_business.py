@@ -151,6 +151,7 @@ class RefundRequest(BusinessModel):
     payment_id: str
     amount: Decimal = Field(gt=0)
     reason: str = Field(min_length=1)
+    approval_confirmed: bool = False
 
 
 class MockBusinessClient:
@@ -169,7 +170,7 @@ class MockBusinessClient:
         )
 
     @classmethod
-    def from_environment(cls) -> "MockBusinessClient":
+    def from_environment(cls) -> MockBusinessClient:
         base_url = os.getenv("MOCK_BUSINESS_BASE_URL", "http://127.0.0.1:8000")
         timeout = float(os.getenv("MOCK_BUSINESS_TIMEOUT_SECONDS", "5"))
         return cls(base_url, timeout_seconds=timeout)
@@ -219,7 +220,14 @@ class MockBusinessClient:
             json=request.model_dump(mode="json"),
         )
 
-    def request_refund(self, request: RefundRequest) -> Refund:
+    def request_refund(
+        self,
+        request: RefundRequest,
+        *,
+        approval_confirmed: bool | None = None,
+    ) -> Refund:
+        if approval_confirmed is not None:
+            request = request.model_copy(update={"approval_confirmed": approval_confirmed})
         return self._request(
             "POST",
             "/refunds",

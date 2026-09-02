@@ -196,14 +196,42 @@ class BusinessService:
 
         approval_threshold = Decimal(self.database.state("refund_approval_threshold") or "150")
         requires_approval = request.amount > approval_threshold
-        status = RefundStatus.PENDING_APPROVAL if requires_approval else RefundStatus.APPROVED
-        refund = Refund(refund_id=f"ref_{uuid4().hex[:10]}", order_id=order.order_id, payment_id=payment.payment_id,
-                        amount=Decimal(request.amount), status=status, reason=request.reason, created_at=datetime.now(UTC),
-                        requires_approval=requires_approval, decision_reason=None)
+        status = (
+            RefundStatus.PENDING_APPROVAL
+            if requires_approval and not request.approval_confirmed
+            else RefundStatus.APPROVED
+        )
+        decision_reason = (
+            "harness_approval_confirmed" if request.approval_confirmed else None
+        )
+        refund = Refund(
+            refund_id=f"ref_{uuid4().hex[:10]}",
+            order_id=order.order_id,
+            payment_id=payment.payment_id,
+            amount=Decimal(request.amount),
+            status=status,
+            reason=request.reason,
+            created_at=datetime.now(UTC),
+            requires_approval=requires_approval,
+            decision_reason=decision_reason,
+        )
         self.database.save_refund(refund)
-        self.database.emit("refund.approval_required" if requires_approval else "refund.approved", self.active_scenario_id,
-                           entity_type="refund", entity_id=refund.refund_id,
-                           data={"order_id": order.order_id, "payment_id": payment.payment_id, "amount": str(refund.amount)})
+        event_type = (
+            "refund.approval_required"
+            if requires_approval and not request.approval_confirmed
+            else "refund.approved"
+        )
+        self.database.emit(
+            event_type,
+            self.active_scenario_id,
+            entity_type="refund",
+            entity_id=refund.refund_id,
+            data={
+                "order_id": order.order_id,
+                "payment_id": payment.payment_id,
+                "amount": str(refund.amount),
+            },
+        )
         return refund
 
     def _emit_read(self, event_type: str, entity_type: str, entity_id: str,

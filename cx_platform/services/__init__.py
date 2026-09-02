@@ -5,6 +5,12 @@ from .lifecycle import (
     InvalidCSATSubmission,
     InvalidTicketTransition,
 )
+from .support import (
+    SupportService,
+    SupportServiceError,
+    SupportTurnResult,
+    build_support_service,
+)
 
 __all__ = [
     "CXHistoryService",
@@ -13,4 +19,8 @@ __all__ = [
     "InvalidTicketTransition",
     "LearningSignal",
     "OutcomeLearningService",
+    "SupportService",
+    "SupportServiceError",
+    "SupportTurnResult",
+    "build_support_service",
 ]

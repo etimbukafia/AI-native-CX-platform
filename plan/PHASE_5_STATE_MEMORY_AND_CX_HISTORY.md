@@ -146,10 +146,14 @@ Create an application-owned port such as:
 cx_platform/memory/
   port.py
   local.py
-  senselab.py
+  senselab/
+    __init__.py
+    adapter.py
+    http.py
+    mapping.py
 ```
 
-The support application depends on the port. `senselab.py` contains the external integration.
+The support application depends on the port. The `senselab/` package contains the external integration, with transport and payload mapping kept separate from adapter orchestration.
 
 A small contract is enough. Conceptually:
 

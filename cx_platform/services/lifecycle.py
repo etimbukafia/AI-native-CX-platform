@@ -3,8 +3,8 @@ from __future__ import annotations
 from uuid import uuid4
 
 from cx_platform.domain.models import (
-    ActorType,
     CSAT,
+    ActorType,
     Conversation,
     ConversationStatus,
     Escalation,
@@ -84,6 +84,7 @@ class ConversationService:
         actor_type: ActorType,
         actor_id: str,
         content: str,
+        execution_id: str | None = None,
     ) -> Message:
         if self.repositories.conversation(conversation_id) is None:
             raise KeyError(conversation_id)
@@ -93,6 +94,7 @@ class ConversationService:
             actor_type=actor_type,
             actor_id=actor_id,
             content=content,
+            execution_id=execution_id,
         )
         return self.repositories.save_message(message)
 
@@ -163,11 +165,25 @@ class ConversationService:
         *,
         reason: EscalationReason,
         summary: str,
+        conversation_id: str | None = None,
+        execution_id: str | None = None,
+        customer_goal: str | None = None,
+        active_order_id: str | None = None,
+        active_item_id: str | None = None,
+        actions_attempted: list[str] | None = None,
+        tool_result_refs: list[str] | None = None,
     ) -> Escalation:
         self.transition_ticket(ticket_id, TicketStatus.ESCALATED)
         escalation = Escalation(
             escalation_id=self._id("esc"),
             ticket_id=ticket_id,
+            conversation_id=conversation_id,
+            execution_id=execution_id,
+            customer_goal=customer_goal,
+            active_order_id=active_order_id,
+            active_item_id=active_item_id,
+            actions_attempted=actions_attempted or [],
+            tool_result_refs=tool_result_refs or [],
             reason=reason,
             summary=summary,
         )

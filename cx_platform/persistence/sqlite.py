@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from cx_platform.domain.models import (
     CSAT,
+    ApprovalRecord,
     Conversation,
     CustomerBinding,
     CustomerHistory,
@@ -24,7 +25,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class CXDatabase:
-    schema_version = 3
+    schema_version = 6
 
     def __init__(self, path: str = "cx_platform.db") -> None:
         self.path = path
@@ -91,6 +92,7 @@ class CXDatabase:
                     status TEXT NOT NULL,
                     started_at TEXT NOT NULL,
                     ended_at TEXT,
+                    UNIQUE (conversation_id, customer_id),
                     FOREIGN KEY (ticket_id, customer_id)
                         REFERENCES tickets(ticket_id, customer_id)
                         ON DELETE RESTRICT
@@ -101,6 +103,7 @@ class CXDatabase:
                     actor_type TEXT NOT NULL,
                     actor_id TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    execution_id TEXT,
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (conversation_id)
                         REFERENCES conversations(conversation_id)
@@ -109,6 +112,13 @@ class CXDatabase:
                 CREATE TABLE IF NOT EXISTS escalations (
                     escalation_id TEXT PRIMARY KEY,
                     ticket_id TEXT NOT NULL,
+                    conversation_id TEXT,
+                    execution_id TEXT,
+                    customer_goal TEXT,
+                    active_order_id TEXT,
+                    active_item_id TEXT,
+                    actions_attempted TEXT NOT NULL,
+                    tool_result_refs TEXT NOT NULL,
                     reason TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -116,6 +126,42 @@ class CXDatabase:
                     resolved_at TEXT,
                     FOREIGN KEY (ticket_id)
                         REFERENCES tickets(ticket_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (conversation_id)
+                        REFERENCES conversations(conversation_id)
+                        ON DELETE RESTRICT
+                );
+                CREATE TABLE IF NOT EXISTS approvals (
+                    approval_id TEXT PRIMARY KEY,
+                    customer_id TEXT NOT NULL,
+                    ticket_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    harness_request_id TEXT UNIQUE NOT NULL,
+                    action_digest TEXT NOT NULL,
+                    tool_id TEXT NOT NULL,
+                    action_summary TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    harness_approval_id TEXT,
+                    decided_by TEXT,
+                    decision_reason TEXT,
+                    requested_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    FOREIGN KEY (customer_id)
+                        REFERENCES customer_bindings(customer_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (ticket_id)
+                        REFERENCES tickets(ticket_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (conversation_id)
+                        REFERENCES conversations(conversation_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (ticket_id, customer_id)
+                        REFERENCES tickets(ticket_id, customer_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (conversation_id, customer_id)
+                        REFERENCES conversations(conversation_id, customer_id)
                         ON DELETE RESTRICT
                 );
                 CREATE TABLE IF NOT EXISTS outcomes (
@@ -188,6 +234,9 @@ class CXRepositories:
     def save_escalation(self, item: Escalation) -> Escalation:
         return self._save("escalations", item)
 
+    def save_approval(self, item: ApprovalRecord) -> ApprovalRecord:
+        return self._save("approvals", item)
+
     def save_outcome(self, item: Outcome) -> Outcome:
         return self._save("outcomes", item)
 
@@ -201,10 +250,15 @@ class CXRepositories:
         return self._one("tickets", "ticket_id", ticket_id, Ticket)
 
     def conversation(self, conversation_id: str) -> Conversation | None:
-        return self._one("conversations", "conversation_id", conversation_id, Conversation)
+        return self._one(
+            "conversations", "conversation_id", conversation_id, Conversation
+        )
 
     def escalation(self, escalation_id: str) -> Escalation | None:
         return self._one("escalations", "escalation_id", escalation_id, Escalation)
+
+    def approval(self, approval_id: str) -> ApprovalRecord | None:
+        return self._one("approvals", "approval_id", approval_id, ApprovalRecord)
 
     def outcome(self, outcome_id: str) -> Outcome | None:
         return self._one("outcomes", "outcome_id", outcome_id, Outcome)
@@ -217,6 +271,34 @@ class CXRepositories:
 
     def outcomes(self, ticket_id: str) -> list[Outcome]:
         return self._many("outcomes", "ticket_id", ticket_id, Outcome)
+
+    def escalations(self, ticket_id: str) -> list[Escalation]:
+        return self._many("escalations", "ticket_id", ticket_id, Escalation)
+
+    def approvals(
+        self,
+        *,
+        execution_id: str | None = None,
+        ticket_id: str | None = None,
+        status: str | None = None,
+    ) -> list[ApprovalRecord]:
+        clauses: list[str] = []
+        values: list[str] = []
+        for column, value in (
+            ("execution_id", execution_id),
+            ("ticket_id", ticket_id),
+            ("status", status),
+        ):
+            if value is not None:
+                clauses.append(f"{column}=?")
+                values.append(value)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM approvals{where} ORDER BY requested_at",
+                values,
+            ).fetchall()
+        return [self._model(row, ApprovalRecord) for row in rows]
 
     def memory_references(
         self,
@@ -311,7 +393,9 @@ class CXRepositories:
         )
 
     def binding(self, customer_id: str) -> CustomerBinding | None:
-        return self._one("customer_bindings", "customer_id", customer_id, CustomerBinding)
+        return self._one(
+            "customer_bindings", "customer_id", customer_id, CustomerBinding
+        )
 
     def _save(self, table: str, item: T) -> T:
         data = item.model_dump(mode="json")
@@ -378,6 +462,6 @@ class CXRepositories:
         for key, value in data.items():
             if key.endswith("_at") and value is not None:
                 data[key] = datetime.fromisoformat(value)
-            elif key == "metadata":
+            elif key == "metadata" or key in {"actions_attempted", "tool_result_refs"}:
                 data[key] = json.loads(value)
         return factory(**data)

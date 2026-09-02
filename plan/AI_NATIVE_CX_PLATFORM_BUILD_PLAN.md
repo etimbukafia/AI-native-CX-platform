@@ -586,7 +586,11 @@ Use a small application-owned port:
 cx_platform/memory/
   port.py
   local.py
-  senselab.py
+  senselab/
+    __init__.py
+    adapter.py
+    http.py
+    mapping.py
 ```
 
 A minimal contract is enough:
