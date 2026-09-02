@@ -19,7 +19,11 @@ from src.mock_business.api import create_app as create_business_app
 
 
 def make_support_service(
-    *, scenario: str = "normal_delivery", tool_id: str = "get_order", arguments=None
+    *,
+    scenario: str = "normal_delivery",
+    tool_id: str = "get_order",
+    arguments=None,
+    memory=None,
 ):
     business_api = TestClient(create_business_app(":memory:"))
     business_api.post(f"/scenarios/{scenario}/activate")
@@ -47,6 +51,7 @@ def make_support_service(
     service = build_support_service(
         business,
         conversations,
+        memory=memory,
         deterministic_tool_id=tool_id,
         deterministic_arguments=selected_arguments or {"order_id": "ord_001"},
     )
@@ -99,6 +104,10 @@ def test_refund_waits_for_harness_approval_and_business_sees_one_decision() -> N
     assert waiting.ticket_status is TicketStatus.WAITING_APPROVAL
     assert repositories.ticket(ticket.ticket_id).status is TicketStatus.WAITING_APPROVAL
     assert service.approval_records()[0].status.value == "PENDING"
+    assert not any(
+        event["event_type"].startswith("refund.")
+        for event in business_api.get("/events").json()
+    )
 
     cx_api = TestClient(create_cx_app(service))
     approval_response = cx_api.post(
@@ -172,6 +181,43 @@ def test_escalation_contains_execution_and_action_context() -> None:
     assert escalation.execution_id == result.execution_id
     assert escalation.customer_goal == ticket.reason
     assert escalation.actions_attempted == ["escalate_to_human"]
+
+
+def test_unauthorized_write_is_refused_before_business_execution() -> None:
+    service, business_api, conversation, ticket, repositories = make_support_service(
+        tool_id="delete_customer",
+        arguments={"customer_id": "cus_001"},
+    )
+
+    result = service.handle_message(conversation.conversation_id, "Delete my account.")
+
+    assert result.status is OutcomeStatus.FAILED
+    assert result.ticket_status is TicketStatus.ESCALATED
+    escalation = repositories.escalations(ticket.ticket_id)[0]
+    assert escalation.reason is EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE
+    assert not any(
+        event["event_type"].startswith("customer.delete")
+        for event in business_api.get("/events").json()
+    )
+
+
+class UnavailableMemory:
+    provider = "senselab"
+
+    def search_relevant(self, **_: object):
+        raise RuntimeError("SenseLab is unavailable")
+
+
+def test_senselab_failure_keeps_deterministic_support_available() -> None:
+    service, _, conversation, ticket, _ = make_support_service(
+        memory=UnavailableMemory(),
+    )
+
+    result = service.handle_message(conversation.conversation_id, "Where is my order?")
+
+    assert result.status is OutcomeStatus.COMPLETED
+    assert result.ticket_status is TicketStatus.RESOLVED
+    assert ticket.ticket_id == result.ticket_id
 
 
 def test_orphan_approval_reference_is_rejected_by_cx_foreign_keys() -> None:

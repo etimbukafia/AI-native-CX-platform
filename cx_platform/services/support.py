@@ -772,8 +772,15 @@ class SupportService:
             return EscalationReason.UNSUPPORTED_REQUEST
         if "business_approval_still_required" in failure_codes:
             return EscalationReason.ACTION_REQUIRES_HUMAN
-        if outcome.error_code == "approval_rejected":
+        if outcome.error_code in {"approval_rejected", "approval_expired"}:
             return EscalationReason.ACTION_REQUIRES_HUMAN
+        if outcome.error_code in {
+            "approval_stale",
+            "approval_action_mismatch",
+            "approval_request_mismatch",
+            "approval_expiry_invalid",
+        }:
+            return EscalationReason.POLICY_CONFLICT
         if outcome.error_code in {
             "policy_denied",
             "permission_denied",
@@ -814,6 +821,8 @@ class SupportService:
             return "I cannot complete that action under the current support policy. I have handed this request to a human support specialist."
         if reason is EscalationReason.UNSUPPORTED_REQUEST:
             return "I cannot safely handle that request. I have handed it to a human support specialist."
+        if outcome is not None and outcome.error_code == "approval_expired":
+            return "The approval expired before the action could run. I have handed this request to a human support specialist."
         if outcome is not None and outcome.error_code == "approval_rejected":
             return "The reviewed action was rejected. I have handed this request to a human support specialist."
         return "I could not safely complete this request. I have handed it to a human support specialist."
