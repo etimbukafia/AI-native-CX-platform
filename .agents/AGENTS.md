@@ -43,7 +43,9 @@ The goal of writing is easy reading and communication of information.
 - Do not assert module inventories, import text, private attributes, object wiring, or arbitrary implementation constants.
 - Assert a provider or tool call count only when deduplication protects a user, reliability, or cost rule.
 - Remove a test when a stronger user-facing or integration test covers the same behavior.
+- Do not keep several tests for one branch only because their mocks differ.
 - A source refactor should not require test changes when behavior stays the same.
+- If it does, review the test for implementation coupling.
 - Use small test data and deterministic control flow.
 - Do not add stress tests unless they protect a measured limit or safety boundary.
 - Every test name must state the behavior it protects.
