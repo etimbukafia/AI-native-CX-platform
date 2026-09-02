@@ -116,3 +116,44 @@ class CSAT(BaseModel):
     comment: str | None = None
     submitted_at: datetime = Field(default_factory=now)
 
+
+class MemoryOperation(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    CONTEXT = "context"
+    OUTCOME = "outcome"
+    FAILURE = "failure"
+
+
+class MemoryReference(BaseModel):
+    """Small CX-owned reference to an external memory operation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reference_id: str = Field(min_length=1)
+    execution_id: str = Field(min_length=1)
+    customer_id: str | None = Field(default=None, min_length=1)
+    conversation_id: str | None = Field(default=None, min_length=1)
+    memory_provider: str = Field(min_length=1)
+    memory_entry_id: str = Field(min_length=1)
+    memory_key: str = Field(min_length=1)
+    memory_version: int | None = Field(default=None, ge=1)
+    memory_scope: str = Field(min_length=1)
+    operation: MemoryOperation
+    outcome_id: str | None = Field(default=None, min_length=1)
+    csat_id: str | None = Field(default=None, min_length=1)
+    occurred_at: datetime = Field(default_factory=now)
+
+
+class CustomerHistory(BaseModel):
+    """Authoritative service history for one CX customer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    customer_id: str = Field(min_length=1)
+    conversations: list[Conversation] = Field(default_factory=list)
+    messages: list[Message] = Field(default_factory=list)
+    tickets: list[Ticket] = Field(default_factory=list)
+    escalations: list[Escalation] = Field(default_factory=list)
+    outcomes: list[Outcome] = Field(default_factory=list)
+    csat: list[CSAT] = Field(default_factory=list)

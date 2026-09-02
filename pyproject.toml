@@ -30,3 +30,6 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "live: opt-in external service smoke tests",
+]

@@ -10,9 +10,11 @@ from pydantic import BaseModel
 
 from cx_platform.domain.models import (
     CSAT,
-    CustomerBinding,
     Conversation,
+    CustomerBinding,
+    CustomerHistory,
     Escalation,
+    MemoryReference,
     Message,
     Outcome,
     Ticket,
@@ -22,14 +24,23 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class CXDatabase:
-    schema_version = 2
+    schema_version = 3
 
     def __init__(self, path: str = "cx_platform.db") -> None:
         self.path = path
+        self._memory_connection: sqlite3.Connection | None = None
+        if path == ":memory:":
+            self._memory_connection = sqlite3.connect(
+                ":memory:",
+                check_same_thread=False,
+            )
         self._migrate()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        if self._memory_connection is not None:
+            connection = self._memory_connection
+        else:
+            connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -127,6 +138,33 @@ class CXDatabase:
                         REFERENCES tickets(ticket_id)
                         ON DELETE RESTRICT
                 );
+                CREATE TABLE IF NOT EXISTS memory_references (
+                    reference_id TEXT PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
+                    customer_id TEXT,
+                    conversation_id TEXT,
+                    memory_provider TEXT NOT NULL,
+                    memory_entry_id TEXT NOT NULL,
+                    memory_key TEXT NOT NULL,
+                    memory_version INTEGER,
+                    memory_scope TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    outcome_id TEXT,
+                    csat_id TEXT,
+                    occurred_at TEXT NOT NULL,
+                    FOREIGN KEY (customer_id)
+                        REFERENCES customer_bindings(customer_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (conversation_id)
+                        REFERENCES conversations(conversation_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (outcome_id)
+                        REFERENCES outcomes(outcome_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (csat_id)
+                        REFERENCES csat(csat_id)
+                        ON DELETE RESTRICT
+                );
                 """
             )
 
@@ -156,6 +194,9 @@ class CXRepositories:
     def save_csat(self, item: CSAT) -> CSAT:
         return self._save("csat", item)
 
+    def save_memory_reference(self, item: MemoryReference) -> MemoryReference:
+        return self._save("memory_references", item)
+
     def ticket(self, ticket_id: str) -> Ticket | None:
         return self._one("tickets", "ticket_id", ticket_id, Ticket)
 
@@ -165,11 +206,112 @@ class CXRepositories:
     def escalation(self, escalation_id: str) -> Escalation | None:
         return self._one("escalations", "escalation_id", escalation_id, Escalation)
 
+    def outcome(self, outcome_id: str) -> Outcome | None:
+        return self._one("outcomes", "outcome_id", outcome_id, Outcome)
+
+    def csat(self, csat_id: str) -> CSAT | None:
+        return self._one("csat", "csat_id", csat_id, CSAT)
+
     def messages(self, conversation_id: str) -> list[Message]:
         return self._many("messages", "conversation_id", conversation_id, Message)
 
     def outcomes(self, ticket_id: str) -> list[Outcome]:
         return self._many("outcomes", "ticket_id", ticket_id, Outcome)
+
+    def memory_references(
+        self,
+        *,
+        execution_id: str | None = None,
+        outcome_id: str | None = None,
+        csat_id: str | None = None,
+    ) -> list[MemoryReference]:
+        clauses: list[str] = []
+        values: list[str] = []
+        if execution_id is not None:
+            clauses.append("execution_id=?")
+            values.append(execution_id)
+        if outcome_id is not None:
+            clauses.append("outcome_id=?")
+            values.append(outcome_id)
+        if csat_id is not None:
+            clauses.append("csat_id=?")
+            values.append(csat_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM memory_references{where} ORDER BY occurred_at",
+                values,
+            ).fetchall()
+        return [self._model(row, MemoryReference) for row in rows]
+
+    def customer_history(self, customer_id: str) -> CustomerHistory:
+        if self.binding(customer_id) is None:
+            raise KeyError(customer_id)
+        conversations = self._many(
+            "conversations",
+            "customer_id",
+            customer_id,
+            Conversation,
+            order_column="started_at",
+        )
+        messages = self._customer_many(
+            """
+            SELECT messages.*
+            FROM messages
+            JOIN conversations
+                ON conversations.conversation_id = messages.conversation_id
+            WHERE conversations.customer_id=?
+            ORDER BY messages.created_at
+            """,
+            customer_id,
+            Message,
+        )
+        tickets = self._many("tickets", "customer_id", customer_id, Ticket)
+        escalations = self._customer_many(
+            """
+            SELECT escalations.*
+            FROM escalations
+            JOIN tickets ON tickets.ticket_id = escalations.ticket_id
+            WHERE tickets.customer_id=?
+            ORDER BY escalations.created_at
+            """,
+            customer_id,
+            Escalation,
+        )
+        outcomes = self._customer_many(
+            """
+            SELECT outcomes.*
+            FROM outcomes
+            JOIN tickets ON tickets.ticket_id = outcomes.ticket_id
+            WHERE tickets.customer_id=?
+            ORDER BY outcomes.created_at
+            """,
+            customer_id,
+            Outcome,
+        )
+        csat = self._customer_many(
+            """
+            SELECT csat.*
+            FROM csat
+            JOIN tickets ON tickets.ticket_id = csat.ticket_id
+            WHERE tickets.customer_id=?
+            ORDER BY csat.submitted_at
+            """,
+            customer_id,
+            CSAT,
+        )
+        return CustomerHistory(
+            customer_id=customer_id,
+            conversations=conversations,
+            messages=messages,
+            tickets=tickets,
+            escalations=escalations,
+            outcomes=outcomes,
+            csat=csat,
+        )
+
+    def binding(self, customer_id: str) -> CustomerBinding | None:
+        return self._one("customer_bindings", "customer_id", customer_id, CustomerBinding)
 
     def _save(self, table: str, item: T) -> T:
         data = item.model_dump(mode="json")
@@ -210,12 +352,24 @@ class CXRepositories:
         key: str,
         value: str,
         factory: Callable[..., T],
+        *,
+        order_column: str = "created_at",
     ) -> list[T]:
         with self.database.connect() as connection:
             rows = connection.execute(
-                f"SELECT * FROM {table} WHERE {key}=? ORDER BY created_at",
+                f"SELECT * FROM {table} WHERE {key}=? ORDER BY {order_column}",
                 (value,),
             ).fetchall()
+        return [self._model(row, factory) for row in rows]
+
+    def _customer_many(
+        self,
+        statement: str,
+        customer_id: str,
+        factory: Callable[..., T],
+    ) -> list[T]:
+        with self.database.connect() as connection:
+            rows = connection.execute(statement, (customer_id,)).fetchall()
         return [self._model(row, factory) for row in rows]
 
     @staticmethod
