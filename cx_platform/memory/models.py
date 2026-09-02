@@ -105,8 +105,4 @@ __all__ = [
     "MemoryOutcomeResult",
     "MemoryProvenance",
     "MemoryScope",
-    "MemoryType",
 ]
-
-
-MemoryType = MemoryKind

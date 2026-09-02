@@ -10,7 +10,6 @@ from .models import (
     MemoryOutcomeResult,
     MemoryProvenance,
     MemoryScope,
-    MemoryType,
 )
 from .port import (
     MemoryConfigurationError,
@@ -48,7 +47,6 @@ __all__ = [
     "MemoryProvenance",
     "MemoryResponseError",
     "MemoryScope",
-    "MemoryType",
     "MemoryUnavailable",
     "ResilientMemory",
     "SenseLabMemory",

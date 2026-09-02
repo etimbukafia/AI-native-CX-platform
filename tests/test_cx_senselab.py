@@ -22,18 +22,16 @@ def test_senselab_adapter_uses_typed_documented_http_operations() -> None:
         if request.url.path == "/api/v1/search":
             return httpx.Response(
                 200,
-                json={
-                    "entries": [
-                        {
-                            "entity_path": "support/delivery_resolution",
-                            "key": "clear_next_check",
-                            "value": "State the next check.",
-                            "version": 2,
-                            "confidence": 0.9,
-                            "memory_type": "belief",
-                        }
-                    ]
-                },
+                json=[
+                    {
+                        "entity_path": "support/delivery_resolution",
+                        "key": "clear_next_check",
+                        "value": "State the next check.",
+                        "version": 2,
+                        "confidence": 0.9,
+                        "memory_type": "belief",
+                    }
+                ],
                 request=request,
             )
         if request.url.path == "/api/v1/entries":

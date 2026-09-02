@@ -10,9 +10,6 @@ from enterprise_agent_harness import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
-CX_WORKFLOW_AGENT_ID = "cx-support-workflow"
-CX_WORKFLOW_AGENT_VERSION = "1.0.0"
-
 
 class WorkflowStateValidationError(ValueError):
     """Raised when stored state does not belong to its requested case."""
@@ -64,17 +61,20 @@ class WorkflowStateRecord(BaseModel):
 class WorkflowStateManager:
     """Store CX state through a harness StateStore.
 
-    The workflow state uses a namespaced state ID. This keeps it separate from
-    a runtime execution record that may use the same harness store.
+    The caller supplies the real Harness agent identity. Phase 6 can therefore
+    use the same agent ID and version for state and governed executions.
+    The state ID is only a case key for one customer conversation.
     """
 
     def __init__(
         self,
         state_store: StateStore,
         *,
-        agent_id: str = CX_WORKFLOW_AGENT_ID,
-        agent_version: str = CX_WORKFLOW_AGENT_VERSION,
+        agent_id: str,
+        agent_version: str,
     ) -> None:
+        if not agent_id or not agent_version:
+            raise ValueError("agent ID and agent version are required")
         self.state_store = state_store
         self.agent_id = agent_id
         self.agent_version = agent_version
@@ -349,15 +349,9 @@ class WorkflowStateManager:
 
 
 __all__ = [
-    "CX_WORKFLOW_AGENT_ID",
-    "CX_WORKFLOW_AGENT_VERSION",
     "WorkflowState",
     "WorkflowStateManager",
     "WorkflowStatePatch",
     "WorkflowStateRecord",
-    "WorkflowStateStore",
     "WorkflowStateValidationError",
 ]
-
-
-WorkflowStateStore = WorkflowStateManager

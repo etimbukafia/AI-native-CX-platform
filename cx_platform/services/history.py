@@ -10,14 +10,10 @@ class CXHistoryService:
     def __init__(self, repositories: CXRepositories) -> None:
         self.repositories = repositories
 
-    def for_customer(self, customer_id: str) -> CustomerHistory:
-        return self.repositories.customer_history(customer_id)
-
-    def customer_history(self, customer_id: str) -> CustomerHistory:
-        return self.for_customer(customer_id)
-
     def get_customer_history(self, customer_id: str) -> CustomerHistory:
-        return self.for_customer(customer_id)
+        """Return the durable CX history for one customer."""
+
+        return self.repositories.customer_history(customer_id)
 
 
 __all__ = ["CXHistoryService"]

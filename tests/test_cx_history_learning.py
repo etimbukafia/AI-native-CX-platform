@@ -63,7 +63,7 @@ def test_customer_history_returns_cx_records_without_cross_customer_records(tmp_
     csat = service.submit_csat(first_ticket.ticket_id, score=5)
     service.start(customer_id="cx_cus_02", reason="Delivery question")
 
-    history = CXHistoryService(repositories).for_customer("cx_cus_01")
+    history = CXHistoryService(repositories).get_customer_history("cx_cus_01")
 
     assert history.customer_id == "cx_cus_01"
     assert [item.conversation_id for item in history.conversations] == [
