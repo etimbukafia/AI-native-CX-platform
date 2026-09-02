@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import TypeVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -33,6 +33,9 @@ class TransportFailure(MockBusinessError):
 
 class BusinessModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+T = TypeVar("T", bound=BusinessModel)
 
 
 class Customer(BusinessModel):
@@ -202,13 +205,17 @@ class MockBusinessClient:
         return self._get_list("/knowledge", KnowledgeArticle, params={"topic": topic})
 
     def cancel_order(self, order_id: str) -> CancellationResult:
-        return self._request("POST", f"/orders/{order_id}/cancel", CancellationResult)
+        return self._request(
+            "POST",
+            f"/orders/{order_id}/cancel",
+            TypeAdapter(CancellationResult),
+        )
 
     def request_return(self, request: ReturnRequest) -> Return:
         return self._request(
             "POST",
             "/returns",
-            Return,
+            TypeAdapter(Return),
             json=request.model_dump(mode="json"),
         )
 
@@ -216,17 +223,28 @@ class MockBusinessClient:
         return self._request(
             "POST",
             "/refunds",
-            Refund,
+            TypeAdapter(Refund),
             json=request.model_dump(mode="json"),
         )
 
-    def _get(self, path: str, model: type[BusinessModel]) -> Any:
-        return self._request("GET", path, model)
+    def _get(self, path: str, model: type[T]) -> T:
+        return self._request("GET", path, TypeAdapter(model))
 
-    def _get_list(self, path: str, model: type[BusinessModel], **kwargs: object) -> Any:
-        return self._request("GET", path, list[model], **kwargs)
+    def _get_list(
+        self,
+        path: str,
+        model: type[T],
+        **kwargs: object,
+    ) -> list[T]:
+        return self._request("GET", path, TypeAdapter(list[model]), **kwargs)
 
-    def _request(self, method: str, path: str, model: object, **kwargs: object) -> Any:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        adapter: TypeAdapter[T],
+        **kwargs: object,
+    ) -> T:
         try:
             response = self.client.request(method, path, **kwargs)
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
@@ -244,7 +262,7 @@ class MockBusinessClient:
         except httpx.HTTPStatusError as exc:
             raise MockBusinessError(self._detail(response)) from exc
 
-        return TypeAdapter(model).validate_python(response.json())
+        return adapter.validate_python(response.json())
 
     @staticmethod
     def _detail(response: httpx.Response) -> str:
