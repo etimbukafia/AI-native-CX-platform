@@ -1,7 +1,17 @@
 import sqlite3
 
 import pytest
-from enterprise_agent_harness import OutcomeStatus, PrincipalContext
+from enterprise_agent_harness import (
+    AgentLifecycleStatus,
+    DefaultPermissionBroker,
+    DeterministicProvider,
+    OutcomeStatus,
+    PlanningRequest,
+    PolicyDefinition,
+    PolicyEffect,
+    PrincipalContext,
+    ProviderError,
+)
 from fastapi.testclient import TestClient
 
 from cx_platform.agent import SUPPORT_AGENT_ID, SUPPORT_AGENT_VERSION
@@ -24,6 +34,8 @@ def make_support_service(
     tool_id: str = "get_order",
     arguments=None,
     memory=None,
+    permission_broker=None,
+    provider=None,
 ):
     business_api = TestClient(create_business_app(":memory:"))
     business_api.post(f"/scenarios/{scenario}/activate")
@@ -52,6 +64,8 @@ def make_support_service(
         business,
         conversations,
         memory=memory,
+        permission_broker=permission_broker,
+        provider=provider,
         deterministic_tool_id=tool_id,
         deterministic_arguments=selected_arguments or {"order_id": "ord_001"},
     )
@@ -183,20 +197,37 @@ def test_escalation_contains_execution_and_action_context() -> None:
     assert escalation.actions_attempted == ["escalate_to_human"]
 
 
-def test_unauthorized_write_is_refused_before_business_execution() -> None:
+def test_policy_denied_registered_write_is_refused_before_business_execution() -> None:
+    deny_policy = PolicyDefinition(
+        policy_id="test-deny-write",
+        version="1.0.0",
+        description="Deny this test action.",
+        default_effect=PolicyEffect.DENY,
+        lifecycle=AgentLifecycleStatus.ACTIVE,
+    )
     service, business_api, conversation, ticket, repositories = make_support_service(
-        tool_id="delete_customer",
-        arguments={"customer_id": "cus_001"},
+        tool_id="request_return",
+        arguments={
+            "order_id": "ord_001",
+            "line_id": "line_001",
+            "quantity": 1,
+            "reason": "Damaged",
+        },
+        permission_broker=DefaultPermissionBroker(policies=[deny_policy]),
     )
 
-    result = service.handle_message(conversation.conversation_id, "Delete my account.")
+    result = service.handle_message(
+        conversation.conversation_id,
+        "Please return the damaged item.",
+    )
 
-    assert result.status is OutcomeStatus.FAILED
+    assert result.status is OutcomeStatus.REFUSED
+    assert result.error_code == "policy_denied"
     assert result.ticket_status is TicketStatus.ESCALATED
     escalation = repositories.escalations(ticket.ticket_id)[0]
-    assert escalation.reason is EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE
+    assert escalation.reason is EscalationReason.POLICY_CONFLICT
     assert not any(
-        event["event_type"].startswith("customer.delete")
+        event["event_type"] == "return.approved"
         for event in business_api.get("/events").json()
     )
 
@@ -208,8 +239,14 @@ class UnavailableMemory:
         raise RuntimeError("SenseLab is unavailable")
 
 
+class FailingProvider(DeterministicProvider):
+    def plan(self, *, request: PlanningRequest):
+        del request
+        raise ProviderError("provider is unavailable")
+
+
 def test_senselab_failure_keeps_deterministic_support_available() -> None:
-    service, _, conversation, ticket, _ = make_support_service(
+    service, _, conversation, _, _ = make_support_service(
         memory=UnavailableMemory(),
     )
 
@@ -217,7 +254,20 @@ def test_senselab_failure_keeps_deterministic_support_available() -> None:
 
     assert result.status is OutcomeStatus.COMPLETED
     assert result.ticket_status is TicketStatus.RESOLVED
-    assert ticket.ticket_id == result.ticket_id
+
+
+def test_provider_failure_escalates_as_agent_uncertainty() -> None:
+    service, _, conversation, ticket, repositories = make_support_service(
+        provider=FailingProvider(),
+    )
+
+    result = service.handle_message(conversation.conversation_id, "Where is my order?")
+
+    assert result.status is OutcomeStatus.FAILED
+    assert result.error_code == "provider_failed"
+    assert result.ticket_status is TicketStatus.ESCALATED
+    assert repositories.escalations(ticket.ticket_id)[0].reason is EscalationReason.AGENT_UNCERTAIN
+    assert "could not verify" not in result.response
 
 
 def test_orphan_approval_reference_is_rejected_by_cx_foreign_keys() -> None:

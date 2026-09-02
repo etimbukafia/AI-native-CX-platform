@@ -782,6 +782,13 @@ class SupportService:
         }:
             return EscalationReason.POLICY_CONFLICT
         if outcome.error_code in {
+            "provider_failed",
+            "provider_error",
+            "provider_timeout",
+            "provider_output_invalid",
+        }:
+            return EscalationReason.AGENT_UNCERTAIN
+        if outcome.error_code in {
             "policy_denied",
             "permission_denied",
             "required_permission_missing",
@@ -797,10 +804,6 @@ class SupportService:
             "all_tools_failed",
             "dependency_unavailable",
             "transport_failure",
-            "provider_failed",
-            "provider_error",
-            "provider_timeout",
-            "provider_output_invalid",
         } or any(call.result_status.value == "failed" for call in outcome.tool_calls):
             return EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE
         if outcome.status is OutcomeStatus.REFUSED:

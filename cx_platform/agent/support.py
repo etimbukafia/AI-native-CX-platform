@@ -25,6 +25,7 @@ from enterprise_agent_harness import (
     InMemoryStateStore,
     MemoryItem,
     OpenAIProviderAdapter,
+    PermissionBroker,
     PolicyDefinition,
     PolicyEffect,
     PolicyRule,
@@ -271,6 +272,7 @@ def build_support_agent(
     memory_strategy: SupportMemoryStrategy | None = None,
     runtime_state_store: StateStore | None = None,
     approval_broker: ApprovalBroker | None = None,
+    permission_broker: PermissionBroker | None = None,
     approval_policy: ApprovalPolicy | None = None,
 ) -> BuiltAgent:
     """Build and activate the one declarative customer-support agent."""
@@ -287,6 +289,7 @@ def build_support_agent(
         memory_strategy=memory_strategy,
         runtime_state_store=runtime_state_store,
         approval_broker=approval_broker,
+        permission_broker=permission_broker,
         approval_policy=approval_policy,
     ).agent
 
@@ -314,6 +317,7 @@ def _build_support_assembly(
     memory_strategy: SupportMemoryStrategy | None = None,
     runtime_state_store: StateStore | None = None,
     approval_broker: ApprovalBroker | None = None,
+    permission_broker: PermissionBroker | None = None,
     approval_policy: ApprovalPolicy | None = None,
 ) -> SupportAgentAssembly:
     from cx_platform.tools.support import build_support_tools
@@ -349,6 +353,7 @@ def _build_support_assembly(
         ),
         state_stores={SUPPORT_STATE_STRATEGY_ID: runtime_store},
         default_state_store=runtime_store,
+        permission_broker=permission_broker,
         approval_broker=broker,
     )
     profile = ProviderProfile(
