@@ -6,14 +6,31 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from .database import Database
-from .models import ActiveScenario, BusinessEvent, CancellationResult, Customer, Order, Policy, Refund, RefundRequest, ScenarioSummary, Shipment
+from .models import (
+    ActiveScenario,
+    BusinessEvent,
+    CancellationResult,
+    Customer,
+    FulfillmentIssue,
+    KnowledgeArticle,
+    Order,
+    OrderLine,
+    Payment,
+    Policy,
+    Refund,
+    RefundRequest,
+    Return,
+    ReturnRequest,
+    ScenarioSummary,
+    Shipment,
+)
 from .service import BusinessRuleError, BusinessService, DependencyUnavailable
 
 
 def create_app(database_path: str | None = None) -> FastAPI:
     database = Database(database_path or os.getenv("MOCK_BUSINESS_DB", "mock_business.db"))
     service = BusinessService(database)
-    app = FastAPI(title="Reference Commerce Business", version="0.1.0")
+    app = FastAPI(title="Reference Commerce Business", version="0.2.0")
     app.state.business_service = service
 
     def get_service(request: Request) -> BusinessService:
@@ -63,12 +80,40 @@ def create_app(database_path: str | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Order not found") from exc
 
+    @app.get("/orders/{order_id}/lines", response_model=list[OrderLine])
+    def get_order_lines(order_id: str, current: BusinessService = Depends(get_service)) -> list[OrderLine]:
+        try:
+            return current.order_lines(order_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Order not found") from exc
+
+    @app.get("/orders/{order_id}/payments", response_model=list[Payment])
+    def get_payments(order_id: str, current: BusinessService = Depends(get_service)) -> list[Payment]:
+        try:
+            return current.payments(order_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Order not found") from exc
+
     @app.get("/orders/{order_id}/shipment", response_model=Shipment)
     def get_shipment(order_id: str, current: BusinessService = Depends(get_service)) -> Shipment:
         try:
             return current.shipment(order_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Shipment not found") from exc
+
+    @app.get("/orders/{order_id}/issues", response_model=list[FulfillmentIssue])
+    def get_fulfillment_issues(order_id: str, current: BusinessService = Depends(get_service)) -> list[FulfillmentIssue]:
+        try:
+            return current.fulfillment_issues(order_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Order not found") from exc
+
+    @app.get("/orders/{order_id}/returns", response_model=list[Return])
+    def get_returns(order_id: str, current: BusinessService = Depends(get_service)) -> list[Return]:
+        try:
+            return current.returns(order_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Order not found") from exc
 
     @app.post("/orders/{order_id}/cancel", response_model=CancellationResult)
     def cancel_order(order_id: str, current: BusinessService = Depends(get_service)) -> CancellationResult:
@@ -77,12 +122,19 @@ def create_app(database_path: str | None = None) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Order not found") from exc
 
+    @app.post("/returns", response_model=Return, status_code=201)
+    def request_return(request: ReturnRequest, current: BusinessService = Depends(get_service)) -> Return:
+        try:
+            return current.request_return(request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Order or line not found") from exc
+
     @app.post("/refunds", response_model=Refund, status_code=201)
     def request_refund(request: RefundRequest, current: BusinessService = Depends(get_service)) -> Refund:
         try:
             return current.request_refund(request)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Order not found") from exc
+            raise HTTPException(status_code=404, detail="Order or payment not found") from exc
 
     @app.get("/policies/{topic}", response_model=Policy)
     def get_policy(topic: str, current: BusinessService = Depends(get_service)) -> Policy:
@@ -90,6 +142,13 @@ def create_app(database_path: str | None = None) -> FastAPI:
             return current.policy(topic)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Policy not found") from exc
+
+    @app.get("/knowledge", response_model=list[KnowledgeArticle])
+    def get_knowledge(topic: str, current: BusinessService = Depends(get_service)) -> list[KnowledgeArticle]:
+        try:
+            return current.knowledge(topic)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Knowledge topic not found") from exc
 
     @app.get("/events", response_model=list[BusinessEvent])
     def get_events(after: int = Query(default=0, ge=0), current: BusinessService = Depends(get_service)) -> list[BusinessEvent]:

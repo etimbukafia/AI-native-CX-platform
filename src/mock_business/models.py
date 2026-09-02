@@ -12,11 +12,24 @@ class CustomerSegment(StrEnum):
     PREMIUM = "premium"
 
 
+class AccountStatus(StrEnum):
+    ACTIVE = "active"
+    SUSPENDED = "suspended"
+    CLOSED = "closed"
+
+
 class OrderStatus(StrEnum):
     PROCESSING = "processing"
     SHIPPED = "shipped"
     DELIVERED = "delivered"
     CANCELLED = "cancelled"
+
+
+class PaymentStatus(StrEnum):
+    AUTHORIZED = "authorized"
+    CAPTURED = "captured"
+    REFUNDED = "refunded"
+    FAILED = "failed"
 
 
 class ShipmentStatus(StrEnum):
@@ -27,10 +40,24 @@ class ShipmentStatus(StrEnum):
     DELIVERED = "delivered"
 
 
-class RefundStatus(StrEnum):
+class FulfillmentIssueType(StrEnum):
+    DAMAGED = "damaged"
+    MISSING_ITEM = "missing_item"
+
+
+class ReturnStatus(StrEnum):
     REQUESTED = "requested"
     APPROVED = "approved"
+    RECEIVED = "received"
     REJECTED = "rejected"
+
+
+class RefundStatus(StrEnum):
+    REQUESTED = "requested"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    COMPLETED = "completed"
 
 
 class Customer(BaseModel):
@@ -41,14 +68,28 @@ class Customer(BaseModel):
     email: str
     segment: CustomerSegment = CustomerSegment.STANDARD
     country: str = "NG"
+    account_status: AccountStatus = AccountStatus.ACTIVE
+    lifetime_value: Decimal = Field(default=Decimal("0"), ge=0)
+    created_at: datetime
 
 
 class Product(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     product_id: str
+    sku: str
     name: str
     price: Decimal = Field(ge=0)
+
+
+class OrderLine(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    line_id: str
+    order_id: str
+    product_id: str
+    quantity: int = Field(gt=0)
+    unit_price: Decimal = Field(ge=0)
 
 
 class Order(BaseModel):
@@ -56,10 +97,21 @@ class Order(BaseModel):
 
     order_id: str
     customer_id: str
-    product_id: str
     amount: Decimal = Field(ge=0)
     status: OrderStatus
     created_at: datetime
+
+
+class Payment(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    payment_id: str
+    order_id: str
+    amount: Decimal = Field(gt=0)
+    currency: str = "USD"
+    status: PaymentStatus
+    provider_reference: str
+    captured_at: datetime | None = None
 
 
 class Shipment(BaseModel):
@@ -68,9 +120,33 @@ class Shipment(BaseModel):
     shipment_id: str
     order_id: str
     tracking_number: str
+    carrier: str
     status: ShipmentStatus
     expected_delivery_at: datetime
     last_update_at: datetime
+
+
+class FulfillmentIssue(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    issue_id: str
+    order_id: str
+    line_id: str
+    issue_type: FulfillmentIssueType
+    quantity_affected: int = Field(gt=0)
+    reported_at: datetime
+
+
+class Return(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    return_id: str
+    order_id: str
+    line_id: str
+    quantity: int = Field(gt=0)
+    reason: str
+    status: ReturnStatus
+    requested_at: datetime
 
 
 class Refund(BaseModel):
@@ -78,10 +154,13 @@ class Refund(BaseModel):
 
     refund_id: str
     order_id: str
+    payment_id: str
     amount: Decimal = Field(gt=0)
     status: RefundStatus
     reason: str
     created_at: datetime
+    requires_approval: bool = False
+    decision_reason: str | None = None
 
 
 class Policy(BaseModel):
@@ -91,6 +170,18 @@ class Policy(BaseModel):
     topic: str
     version: str
     text: str
+    effective_at: datetime
+
+
+class KnowledgeArticle(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    article_id: str
+    topic: str
+    title: str
+    body: str
+    version: str
+    effective_at: datetime
 
 
 class BusinessEvent(BaseModel):
@@ -124,6 +215,13 @@ class ActiveScenario(BaseModel):
 class RefundRequest(BaseModel):
     order_id: str
     amount: Decimal = Field(gt=0)
+    reason: str = Field(min_length=1)
+
+
+class ReturnRequest(BaseModel):
+    order_id: str
+    line_id: str
+    quantity: int = Field(gt=0)
     reason: str = Field(min_length=1)
 
 
