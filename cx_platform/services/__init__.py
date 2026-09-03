@@ -1,11 +1,13 @@
+from .events import CXEventService
 from .history import CXHistoryService
 from .learning import LearningSignal, OutcomeLearningService
-from .events import CXEventService
 from .lifecycle import (
     ConversationService,
     InvalidCSATSubmission,
     InvalidTicketTransition,
 )
+from .metrics import CXMetricsService
+from .outcomes import CXOutcomeService
 from .support import (
     SupportService,
     SupportServiceError,
@@ -14,8 +16,10 @@ from .support import (
 )
 
 __all__ = [
-    "CXHistoryService",
     "CXEventService",
+    "CXHistoryService",
+    "CXMetricsService",
+    "CXOutcomeService",
     "ConversationService",
     "InvalidCSATSubmission",
     "InvalidTicketTransition",

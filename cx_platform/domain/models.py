@@ -149,6 +149,21 @@ class Outcome(BaseModel):
     created_at: datetime = Field(default_factory=now)
 
 
+class ResolutionCode(StrEnum):
+    """Small set of reproducible support resolution results."""
+
+    INFORMATION_PROVIDED = "INFORMATION_PROVIDED"
+    DELIVERY_EXPLAINED = "DELIVERY_EXPLAINED"
+    ORDER_CANCELLED = "ORDER_CANCELLED"
+    RETURN_CREATED = "RETURN_CREATED"
+    REFUND_REQUESTED = "REFUND_REQUESTED"
+    REFUND_DENIED = "REFUND_DENIED"
+    PAYMENT_ISSUE_RESOLVED = "PAYMENT_ISSUE_RESOLVED"
+    ESCALATED_TO_HUMAN = "ESCALATED_TO_HUMAN"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+    UNRESOLVED = "UNRESOLVED"
+
+
 class CSAT(BaseModel):
     model_config = ConfigDict(frozen=True)
     csat_id: str
@@ -214,6 +229,76 @@ class ExecutionReference(BaseModel):
     started_at: datetime = Field(default_factory=now)
     completed_at: datetime | None = None
     outcome_status: str | None = Field(default=None, min_length=1)
+
+
+class ConversationRead(BaseModel):
+    """Typed conversation export with its ticket and ordered messages."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    conversation: Conversation
+    ticket: Ticket
+    messages: list[Message] = Field(default_factory=list)
+
+
+class OutcomeRead(BaseModel):
+    """Structured outcome evidence derived from CX-owned records."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    outcome_id: str = Field(min_length=1)
+    ticket_id: str = Field(min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
+    resolution_code: ResolutionCode
+    resolved: bool
+    escalated: bool
+    turn_count: int = Field(ge=0)
+    tool_call_count: int = Field(ge=0)
+    tool_failure_count: int = Field(ge=0)
+    approval_required: bool
+    approval_result: ApprovalRecordStatus | None = None
+    duration: float | None = Field(default=None, ge=0.0)
+    csat_score: int | None = Field(default=None, ge=1, le=5)
+    escalation_id: str | None = Field(default=None, min_length=1)
+    tool_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=now)
+
+
+class TicketDetail(BaseModel):
+    """Typed ticket export with the records needed to reconstruct its case."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ticket: Ticket
+    conversation: Conversation
+    messages: list[Message] = Field(default_factory=list)
+    escalations: list[Escalation] = Field(default_factory=list)
+    approvals: list[ApprovalRecord] = Field(default_factory=list)
+    outcomes: list[OutcomeRead] = Field(default_factory=list)
+    csat: list[CSAT] = Field(default_factory=list)
+
+
+class CXMetrics(BaseModel):
+    """Deterministic aggregate metrics derived from persisted CX evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    conversation_count: int = Field(ge=0)
+    terminal_outcome_count: int = Field(ge=0)
+    resolved_count: int = Field(ge=0)
+    resolution_rate: float = Field(ge=0.0, le=1.0)
+    escalated_count: int = Field(ge=0)
+    escalation_rate: float = Field(ge=0.0, le=1.0)
+    average_turns: float = Field(ge=0.0)
+    tool_call_count: int = Field(ge=0)
+    tool_failure_count: int = Field(ge=0)
+    tool_failure_rate: float = Field(ge=0.0, le=1.0)
+    approval_count: int = Field(ge=0)
+    approval_decided_count: int = Field(ge=0)
+    approval_rate: float = Field(ge=0.0, le=1.0)
+    average_submitted_csat: float | None = Field(default=None, ge=1.0, le=5.0)
+    outcome_distribution: dict[str, int] = Field(default_factory=dict)
 
 
 class MemoryOperation(StrEnum):

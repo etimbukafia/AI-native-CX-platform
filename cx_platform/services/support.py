@@ -30,13 +30,19 @@ from cx_platform.domain.models import (
     ApprovalRecord,
     ApprovalRecordStatus,
     Conversation,
+    ConversationRead,
     CXEvent,
     CXEventType,
+    CXMetrics,
     Escalation,
     EscalationReason,
     ExecutionReference,
     Message,
+    Outcome,
+    OutcomeRead,
+    ResolutionCode,
     Ticket,
+    TicketDetail,
     TicketStatus,
     now,
 )
@@ -50,6 +56,8 @@ from cx_platform.memory import (
 from cx_platform.persistence import CXRepositories
 from cx_platform.services.events import CXEventService
 from cx_platform.services.lifecycle import ConversationService
+from cx_platform.services.metrics import CXMetricsService
+from cx_platform.services.outcomes import CXOutcomeService
 from cx_platform.state import WorkflowStateManager, WorkflowStatePatch
 
 
@@ -108,6 +116,8 @@ class SupportService:
         self.short_term_memory = short_term_memory
         self.workflow_state = workflow_state
         self.tenant_id = tenant_id
+        self.outcome_service = CXOutcomeService(repositories)
+        self.metrics_service = CXMetricsService(repositories, self.outcome_service)
 
     @property
     def workflow_state_manager(self) -> WorkflowStateManager:
@@ -256,6 +266,81 @@ class SupportService:
         """Return the safe CX reference for one Harness execution."""
 
         return self.repositories.execution_reference(execution_id)
+
+    def tickets(
+        self,
+        *,
+        status: TicketStatus | str | None = None,
+        customer_id: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> list[Ticket]:
+        """Return typed tickets for external consumers."""
+
+        status_value = status.value if isinstance(status, TicketStatus) else status
+        return self.repositories.tickets(
+            status=status_value,
+            customer_id=customer_id,
+            after=after,
+            limit=limit,
+        )
+
+    def ticket_detail(self, ticket_id: str) -> TicketDetail | None:
+        """Return one ticket and its safe related CX records."""
+
+        ticket = self.repositories.ticket(ticket_id)
+        if ticket is None:
+            return None
+        conversation = self.repositories.conversation(ticket.conversation_id)
+        if conversation is None:
+            return None
+        return TicketDetail(
+            ticket=ticket,
+            conversation=conversation,
+            messages=self.repositories.messages(conversation.conversation_id),
+            escalations=self.repositories.escalations(ticket_id),
+            approvals=self.repositories.approvals(ticket_id=ticket_id),
+            outcomes=self.outcome_service.list_outcomes(
+                ticket_id=ticket_id,
+                limit=1_000_000,
+            ),
+            csat=self.repositories.csats(ticket_id),
+        )
+
+    def conversation_read(self, conversation_id: str) -> ConversationRead | None:
+        """Return one conversation, its ticket, and ordered messages."""
+
+        conversation = self.repositories.conversation(conversation_id)
+        if conversation is None:
+            return None
+        ticket = self.repositories.ticket(conversation.ticket_id)
+        if ticket is None:
+            return None
+        return ConversationRead(
+            conversation=conversation,
+            ticket=ticket,
+            messages=self.repositories.messages(conversation_id),
+        )
+
+    def outcomes(
+        self,
+        *,
+        ticket_id: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> list[OutcomeRead]:
+        """Return structured outcome evidence for external consumers."""
+
+        return self.outcome_service.list_outcomes(
+            ticket_id=ticket_id,
+            after=after,
+            limit=limit,
+        )
+
+    def metrics(self) -> CXMetrics:
+        """Return deterministic aggregate CX metrics."""
+
+        return self.metrics_service.compute()
 
     def _decide(
         self,
@@ -457,6 +542,7 @@ class SupportService:
 
         reason = self._escalation_reason(outcome, self._failure_codes(outcome))
         response = self._safe_response(outcome, reason)
+        resolution_code = self._resolution_code_for_escalation(reason, outcome)
         escalation = self._escalate(
             ticket=ticket,
             conversation_id=conversation_id,
@@ -465,6 +551,15 @@ class SupportService:
             reason=reason,
             summary=response,
             outcome=outcome,
+            resolution_code=resolution_code,
+        )
+        terminal_outcome = self._record_escalated_outcome(
+            ticket=ticket,
+            execution_id=outcome.execution_id,
+            reason=reason,
+            outcome=outcome,
+            escalation=escalation,
+            resolution_code=resolution_code,
         )
         message = self._append_agent_message(
             conversation_id,
@@ -480,6 +575,7 @@ class SupportService:
             customer_message_id=customer_message_id,
             agent_message_id=message.message_id,
             escalation_id=escalation.escalation_id,
+            outcome_id=terminal_outcome.outcome_id,
             response=response,
         )
 
@@ -543,6 +639,22 @@ class SupportService:
                         }
                     )
                 )
+            escalation_reason = (
+                escalation.reason
+                if escalation is not None
+                else EscalationReason.CUSTOMER_REQUESTED_HUMAN
+            )
+            terminal_outcome = self._record_escalated_outcome(
+                ticket=ticket,
+                execution_id=outcome.execution_id,
+                reason=escalation_reason,
+                outcome=outcome,
+                escalation=escalation,
+                resolution_code=self._resolution_code_for_escalation(
+                    escalation_reason,
+                    outcome,
+                ),
+            )
             self.workflow_state.clear_case(
                 principal,
                 customer_id=ticket.customer_id,
@@ -564,17 +676,20 @@ class SupportService:
                 customer_message_id=customer_message_id,
                 agent_message_id=message.message_id,
                 escalation_id=escalation.escalation_id if escalation else None,
+                outcome_id=terminal_outcome.outcome_id,
                 response=response,
             )
 
+        resolution_code = self._resolution_code_for_completed(outcome)
         resolved = self.conversations.resolve(
             ticket.ticket_id,
-            resolution_code="AGENT_COMPLETED",
+            resolution_code=resolution_code.value,
             outcome_type="support_resolved",
             execution_id=outcome.execution_id,
             metadata={
                 "execution_id": outcome.execution_id,
                 "harness_outcome_id": outcome.outcome_id,
+                "resolution_code": resolution_code.value,
                 "tool_ids": [call.tool_id for call in outcome.tool_calls],
                 "evidence_ids": outcome.evidence_ids,
             },
@@ -637,6 +752,15 @@ class SupportService:
             reason=reason,
             summary=response,
             outcome=None,
+            resolution_code=self._resolution_code_for_escalation(reason, None),
+        )
+        terminal_outcome = self._record_escalated_outcome(
+            ticket=ticket,
+            execution_id=execution_id,
+            reason=reason,
+            outcome=None,
+            escalation=escalation,
+            resolution_code=self._resolution_code_for_escalation(reason, None),
         )
         self.workflow_state.clear_case(
             principal,
@@ -660,6 +784,7 @@ class SupportService:
             ticket_status=TicketStatus.ESCALATED,
             response=response,
             escalation_id=escalation.escalation_id,
+            outcome_id=terminal_outcome.outcome_id,
             error_code="support_execution_failed",
         )
 
@@ -673,6 +798,7 @@ class SupportService:
         reason: EscalationReason,
         summary: str,
         outcome: AgentOutcome | None,
+        resolution_code: ResolutionCode,
     ) -> Escalation:
         current_ticket = self.repositories.ticket(ticket.ticket_id) or ticket
         if current_ticket.status is TicketStatus.ESCALATED:
@@ -687,10 +813,91 @@ class SupportService:
             summary=summary,
             conversation_id=conversation_id,
             execution_id=execution_id,
+            resolution_code=resolution_code.value,
             customer_goal=ticket.reason,
             actions_attempted=actions,
             tool_result_refs=refs,
         )
+
+    def _record_escalated_outcome(
+        self,
+        *,
+        ticket: Ticket,
+        execution_id: str,
+        reason: EscalationReason,
+        outcome: AgentOutcome | None,
+        escalation: Escalation | None,
+        resolution_code: ResolutionCode,
+    ) -> Outcome:
+        existing = [
+            item
+            for item in self.repositories.outcomes(ticket.ticket_id)
+            if item.metadata.get("execution_id") == execution_id
+        ]
+        if existing:
+            return existing[-1]
+        current_ticket = self.repositories.ticket(ticket.ticket_id)
+        if current_ticket is not None and current_ticket.resolution_code != resolution_code.value:
+            self.repositories.save_ticket(
+                current_ticket.model_copy(
+                    update={"resolution_code": resolution_code.value}
+                )
+            )
+        metadata: dict[str, object] = {
+            "execution_id": execution_id,
+            "resolution_code": resolution_code.value,
+            "escalation_reason": reason.value,
+        }
+        if escalation is not None:
+            metadata["escalation_id"] = escalation.escalation_id
+        if outcome is not None:
+            metadata.update(
+                {
+                    "harness_outcome_id": outcome.outcome_id,
+                    "tool_ids": [call.tool_id for call in outcome.tool_calls],
+                    "evidence_ids": outcome.evidence_ids,
+                }
+            )
+            if outcome.error_code is not None:
+                metadata["error_code"] = outcome.error_code
+        return self.conversations.record_outcome(
+            ticket.ticket_id,
+            outcome_type="support_escalated",
+            metadata=metadata,
+            execution_id=execution_id,
+        )
+
+    @staticmethod
+    def _resolution_code_for_completed(outcome: AgentOutcome) -> ResolutionCode:
+        tool_ids = {call.tool_id for call in outcome.tool_calls}
+        if "cancel_order" in tool_ids:
+            return ResolutionCode.ORDER_CANCELLED
+        if "request_return" in tool_ids:
+            return ResolutionCode.RETURN_CREATED
+        if "request_refund" in tool_ids:
+            if "get_order_payments" in tool_ids:
+                return ResolutionCode.PAYMENT_ISSUE_RESOLVED
+            return ResolutionCode.REFUND_REQUESTED
+        if "get_shipment" in tool_ids:
+            return ResolutionCode.DELIVERY_EXPLAINED
+        return ResolutionCode.INFORMATION_PROVIDED
+
+    def _resolution_code_for_escalation(
+        self,
+        reason: EscalationReason,
+        outcome: AgentOutcome | None,
+    ) -> ResolutionCode:
+        if reason is EscalationReason.BUSINESS_SYSTEM_UNAVAILABLE:
+            return ResolutionCode.DEPENDENCY_UNAVAILABLE
+        if (
+            outcome is not None
+            and "request_refund" in {call.tool_id for call in outcome.tool_calls}
+            and "business_rule_rejected" in self._failure_codes(outcome)
+        ):
+            return ResolutionCode.REFUND_DENIED
+        if reason is EscalationReason.UNSUPPORTED_REQUEST:
+            return ResolutionCode.UNRESOLVED
+        return ResolutionCode.ESCALATED_TO_HUMAN
 
     def _save_pending_approval(
         self,

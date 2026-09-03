@@ -229,25 +229,49 @@ class ConversationService:
             resolution_code=resolution_code,
             execution_id=linked_execution_id,
         )
+        self.record_outcome(
+            ticket_id,
+            outcome_type=outcome_type,
+            metadata=outcome_metadata,
+            execution_id=linked_execution_id,
+        )
+        return ticket
+
+    def record_outcome(
+        self,
+        ticket_id: str,
+        *,
+        outcome_type: str,
+        metadata: dict[str, object] | None = None,
+        execution_id: str | None = None,
+    ) -> Outcome:
+        """Persist one CX outcome without changing the ticket lifecycle."""
+
+        ticket = self.repositories.ticket(ticket_id)
+        if ticket is None:
+            raise KeyError(ticket_id)
+        outcome_metadata = dict(metadata or {})
+        if execution_id is not None:
+            outcome_metadata.setdefault("execution_id", execution_id)
         outcome = Outcome(
             outcome_id=self._id("outcome"),
             ticket_id=ticket_id,
             outcome_type=outcome_type,
             metadata=outcome_metadata,
         )
-        saved_outcome = self.repositories.save_outcome(outcome)
+        saved = self.repositories.save_outcome(outcome)
         self.event_service.emit(
             CXEventType.OUTCOME_RECORDED,
             customer_id=ticket.customer_id,
             ticket_id=ticket.ticket_id,
             conversation_id=ticket.conversation_id,
-            execution_id=linked_execution_id,
+            execution_id=execution_id,
             data={
-                "outcome_id": saved_outcome.outcome_id,
-                "outcome_type": saved_outcome.outcome_type,
+                "outcome_id": saved.outcome_id,
+                "outcome_type": saved.outcome_type,
             },
         )
-        return ticket
+        return saved
 
     def escalate(
         self,
@@ -257,6 +281,7 @@ class ConversationService:
         summary: str,
         conversation_id: str | None = None,
         execution_id: str | None = None,
+        resolution_code: str | None = None,
         customer_goal: str | None = None,
         active_order_id: str | None = None,
         active_item_id: str | None = None,
@@ -266,6 +291,7 @@ class ConversationService:
         ticket = self.transition_ticket(
             ticket_id,
             TicketStatus.ESCALATED,
+            resolution_code=resolution_code,
             execution_id=execution_id,
         )
         linked_conversation_id = conversation_id or ticket.conversation_id

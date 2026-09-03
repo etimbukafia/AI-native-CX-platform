@@ -388,6 +388,54 @@ CX events do not replace:
 
 Do not duplicate either stream wholesale. Use correlation IDs and evidence references.
 
+### External evidence read boundary
+
+The CX API exposes typed reads for CX-owned records:
+
+```text
+GET /events
+GET /tickets
+GET /tickets/{ticket_id}
+GET /conversations/{conversation_id}
+GET /executions/{execution_id}
+GET /outcomes
+GET /metrics
+```
+
+These reads support evidence consumers without direct SQLite access. Ticket,
+conversation, message, escalation, outcome, CSAT, and CX event records remain
+CX-owned. Execution reads return only the CX reference to a Harness execution.
+
+The evidence chain uses IDs, not copied streams:
+
+```text
+customer message -> conversation -> ticket -> execution reference
+  -> CX tool event -> mock-business record/event -> agent message
+  -> outcome -> CSAT
+```
+
+The Harness owns detailed traces, approval execution, and workflow state. The
+mock business owns commerce truth and business events. SenseLab owns external
+memory payloads; CX may store safe provenance references. CX does not copy full
+Harness traces, business-event streams, or memory payloads into its database.
+
+The small metrics read is reproducible from CX conversations, terminal outcomes,
+tool events, approval records, and submitted CSAT records. A turn is one stored
+customer message. A tool failure is only an `agent.tool_failed` event. Approval
+rate uses decided approval records. Resolution and escalation rates use terminal
+outcomes as their denominator.
+
+Metric definitions are:
+
+- conversation count: all persisted CX conversations;
+- resolution rate: resolved terminal outcomes divided by terminal outcomes;
+- escalation rate: escalated terminal outcomes divided by terminal outcomes;
+- average turns: customer messages divided by persisted conversations;
+- tool failure rate: failed tool events divided by tool-call events;
+- approval rate: approved records divided by decided approval records;
+- average submitted CSAT: the mean of submitted scores only;
+- outcome distribution: terminal outcomes grouped by resolution code.
+
 ## 12. Persistence baseline
 
 Use one SQLite database for CX-owned durable application records.

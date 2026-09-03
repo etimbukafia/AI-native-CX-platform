@@ -379,8 +379,15 @@ class CXRepositories:
     def messages(self, conversation_id: str) -> list[Message]:
         return self._many("messages", "conversation_id", conversation_id, Message)
 
-    def outcomes(self, ticket_id: str) -> list[Outcome]:
-        return self._many("outcomes", "ticket_id", ticket_id, Outcome)
+    def outcomes(self, ticket_id: str | None = None) -> list[Outcome]:
+        where = " WHERE ticket_id=?" if ticket_id is not None else ""
+        values = (ticket_id,) if ticket_id is not None else ()
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM outcomes{where} ORDER BY created_at, outcome_id",
+                values,
+            ).fetchall()
+        return [self._model(row, Outcome) for row in rows]
 
     def escalations(self, ticket_id: str) -> list[Escalation]:
         return self._many("escalations", "ticket_id", ticket_id, Escalation)
@@ -409,6 +416,75 @@ class CXRepositories:
                 values,
             ).fetchall()
         return [self._model(row, ApprovalRecord) for row in rows]
+
+    def tickets(
+        self,
+        *,
+        status: str | None = None,
+        customer_id: str | None = None,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> list[Ticket]:
+        """Return tickets in stable ticket-ID order for external reads."""
+
+        if limit < 1:
+            raise ValueError("ticket limit must be positive")
+        clauses: list[str] = []
+        values: list[str | int] = []
+        if status is not None:
+            clauses.append("status=?")
+            values.append(status)
+        if customer_id is not None:
+            clauses.append("customer_id=?")
+            values.append(customer_id)
+        if after is not None:
+            clauses.append("ticket_id>?")
+            values.append(after)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM tickets{where} ORDER BY ticket_id LIMIT ?",
+                [*values, limit],
+            ).fetchall()
+        return [self._model(row, Ticket) for row in rows]
+
+    def all_tickets(self) -> list[Ticket]:
+        return self.tickets(limit=1_000_000)
+
+    def all_conversations(self) -> list[Conversation]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM conversations ORDER BY started_at"
+            ).fetchall()
+        return [self._model(row, Conversation) for row in rows]
+
+    def all_messages(self) -> list[Message]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM messages ORDER BY created_at"
+            ).fetchall()
+        return [self._model(row, Message) for row in rows]
+
+    def all_outcomes(self) -> list[Outcome]:
+        return self.outcomes()
+
+    def csats(self, ticket_id: str | None = None) -> list[CSAT]:
+        if ticket_id is None:
+            with self.database.connect() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM csat ORDER BY submitted_at"
+                ).fetchall()
+            return [self._model(row, CSAT) for row in rows]
+        return self._many(
+            "csat",
+            "ticket_id",
+            ticket_id,
+            CSAT,
+            order_column="submitted_at",
+        )
+
+    def all_csats(self) -> list[CSAT]:
+        return self.csats()
 
     def memory_references(
         self,
@@ -444,6 +520,28 @@ class CXRepositories:
             ExecutionReference,
         )
 
+    def execution_references(
+        self,
+        *,
+        ticket_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> list[ExecutionReference]:
+        clauses: list[str] = []
+        values: list[str] = []
+        if ticket_id is not None:
+            clauses.append("ticket_id=?")
+            values.append(ticket_id)
+        if conversation_id is not None:
+            clauses.append("conversation_id=?")
+            values.append(conversation_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM execution_references{where} ORDER BY started_at",
+                values,
+            ).fetchall()
+        return [self._model(row, ExecutionReference) for row in rows]
+
     def events(
         self,
         *,
@@ -467,6 +565,19 @@ class CXRepositories:
                 LIMIT ?
                 """,
                 (cursor, limit),
+            ).fetchall()
+        return [self._model(row, CXEvent) for row in rows]
+
+    def all_events(self) -> list[CXEvent]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, event_type, occurred_at, customer_id,
+                       ticket_id, conversation_id, message_id, execution_id,
+                       actor_type, actor_id, data
+                FROM cx_events
+                ORDER BY event_sequence
+                """
             ).fetchall()
         return [self._model(row, CXEvent) for row in rows]
 
