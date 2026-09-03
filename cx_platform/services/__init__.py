@@ -1,5 +1,6 @@
 from .history import CXHistoryService
 from .learning import LearningSignal, OutcomeLearningService
+from .events import CXEventService
 from .lifecycle import (
     ConversationService,
     InvalidCSATSubmission,
@@ -14,6 +15,7 @@ from .support import (
 
 __all__ = [
     "CXHistoryService",
+    "CXEventService",
     "ConversationService",
     "InvalidCSATSubmission",
     "InvalidTicketTransition",

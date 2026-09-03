@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 def now() -> datetime:
@@ -156,6 +156,64 @@ class CSAT(BaseModel):
     score: int = Field(ge=1, le=5)
     comment: str | None = None
     submitted_at: datetime = Field(default_factory=now)
+
+
+class CXEventType(StrEnum):
+    """Operational event types owned by the CX platform."""
+
+    CONVERSATION_STARTED = "conversation.started"
+    CONVERSATION_ENDED = "conversation.ended"
+    MESSAGE_CUSTOMER_RECEIVED = "message.customer_received"
+    MESSAGE_AGENT_SENT = "message.agent_sent"
+    TICKET_CREATED = "ticket.created"
+    TICKET_STATUS_CHANGED = "ticket.status_changed"
+    TICKET_RESOLVED = "ticket.resolved"
+    TICKET_ESCALATED = "ticket.escalated"
+    AGENT_EXECUTION_STARTED = "agent.execution_started"
+    AGENT_EXECUTION_COMPLETED = "agent.execution_completed"
+    AGENT_EXECUTION_FAILED = "agent.execution_failed"
+    AGENT_TOOL_CALLED = "agent.tool_called"
+    AGENT_TOOL_SUCCEEDED = "agent.tool_succeeded"
+    AGENT_TOOL_FAILED = "agent.tool_failed"
+    APPROVAL_REQUESTED = "approval.requested"
+    APPROVAL_APPROVED = "approval.approved"
+    APPROVAL_REJECTED = "approval.rejected"
+    OUTCOME_RECORDED = "outcome.recorded"
+    CSAT_RECEIVED = "csat.received"
+
+
+class CXEvent(BaseModel):
+    """One append-only operational fact owned by the CX platform."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: str = Field(min_length=1)
+    event_type: CXEventType
+    occurred_at: datetime = Field(default_factory=now)
+    customer_id: str | None = Field(default=None, min_length=1)
+    ticket_id: str | None = Field(default=None, min_length=1)
+    conversation_id: str | None = Field(default=None, min_length=1)
+    message_id: str | None = Field(default=None, min_length=1)
+    execution_id: str | None = Field(default=None, min_length=1)
+    actor_type: ActorType = ActorType.SYSTEM
+    actor_id: str = Field(default="cx-platform", min_length=1)
+    data: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class ExecutionReference(BaseModel):
+    """Small CX link to one Harness execution and its exported trace."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    execution_id: str = Field(min_length=1)
+    ticket_id: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    agent_version: str = Field(min_length=1)
+    trace_reference: str | None = Field(default=None, min_length=1)
+    started_at: datetime = Field(default_factory=now)
+    completed_at: datetime | None = None
+    outcome_status: str | None = Field(default=None, min_length=1)
 
 
 class MemoryOperation(StrEnum):

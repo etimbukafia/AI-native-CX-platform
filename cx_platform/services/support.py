@@ -14,6 +14,7 @@ from enterprise_agent_harness import (
     OutcomeStatus,
     PrincipalContext,
     RiskLevel,
+    ToolResultStatus,
 )
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,11 +30,15 @@ from cx_platform.domain.models import (
     ApprovalRecord,
     ApprovalRecordStatus,
     Conversation,
+    CXEvent,
+    CXEventType,
     Escalation,
     EscalationReason,
+    ExecutionReference,
     Message,
     Ticket,
     TicketStatus,
+    now,
 )
 from cx_platform.memory import (
     ConversationMemory,
@@ -43,6 +48,7 @@ from cx_platform.memory import (
     build_memory,
 )
 from cx_platform.persistence import CXRepositories
+from cx_platform.services.events import CXEventService
 from cx_platform.services.lifecycle import ConversationService
 from cx_platform.state import WorkflowStateManager, WorkflowStatePatch
 
@@ -94,6 +100,7 @@ class SupportService:
             raise ValueError("tenant ID is required")
         self.repositories = repositories
         self.conversations = conversations
+        self.event_service: CXEventService = conversations.event_service
         self.assembly = assembly
         self.agent = assembly.agent
         self.approval_broker = assembly.approval_broker
@@ -128,6 +135,11 @@ class SupportService:
 
         principal = self._principal(ticket.customer_id, session_id or conversation_id)
         execution_id = self.assembly.factory.new_id("execution")
+        self._start_execution_reference(
+            ticket=ticket,
+            conversation_id=conversation_id,
+            execution_id=execution_id,
+        )
         customer_message = self.conversations.append_message(
             conversation_id,
             actor_type=ActorType.CUSTOMER,
@@ -137,8 +149,20 @@ class SupportService:
         )
         if ticket.status is TicketStatus.OPEN:
             self.conversations.transition_ticket(
-                ticket.ticket_id, TicketStatus.IN_PROGRESS
+                ticket.ticket_id,
+                TicketStatus.IN_PROGRESS,
+                execution_id=execution_id,
             )
+        self.event_service.emit(
+            CXEventType.AGENT_EXECUTION_STARTED,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            execution_id=execution_id,
+            actor_type=ActorType.AI_AGENT,
+            actor_id=SUPPORT_AGENT_ID,
+            data={"agent_version": SUPPORT_AGENT_VERSION},
+        )
         self.workflow_state.bind_execution(
             principal,
             customer_id=ticket.customer_id,
@@ -218,6 +242,21 @@ class SupportService:
 
         return self.repositories.approvals(ticket_id=ticket_id)
 
+    def events(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> list[CXEvent]:
+        """Return CX operational events after an event ID or cursor."""
+
+        return self.event_service.poll(after=after, limit=limit)
+
+    def execution_reference(self, execution_id: str) -> ExecutionReference | None:
+        """Return the safe CX reference for one Harness execution."""
+
+        return self.repositories.execution_reference(execution_id)
+
     def _decide(
         self,
         execution_id: str,
@@ -259,6 +298,27 @@ class SupportService:
             }
         )
         self.repositories.save_approval(updated_record)
+        decision_event = (
+            CXEventType.APPROVAL_APPROVED
+            if status is ApprovalRecordStatus.APPROVED
+            else CXEventType.APPROVAL_REJECTED
+        )
+        self.event_service.emit(
+            decision_event,
+            customer_id=record.customer_id,
+            ticket_id=record.ticket_id,
+            conversation_id=record.conversation_id,
+            execution_id=record.execution_id,
+            actor_type=ActorType.HUMAN_AGENT,
+            actor_id=decided_by,
+            data={
+                "approval_id": record.approval_id,
+                "harness_request_id": record.harness_request_id,
+                "harness_approval_id": decision_value.approval_id,
+                "decision_status": decision_value.status.value,
+                "reason_code": decision_value.reason_code,
+            },
+        )
         self._bind_memory(
             principal,
             execution_id,
@@ -310,13 +370,39 @@ class SupportService:
         customer_message_id: str | None,
     ) -> SupportTurnResult:
         request = self.agent.runtime.approval_request_for(outcome.execution_id)
+        self._record_tool_events(
+            outcome,
+            ticket=ticket,
+            conversation_id=conversation_id,
+        )
         if request is not None:
-            approval = self._save_pending_approval(
+            self._update_execution_reference(
+                outcome,
+                pending=True,
+                customer_id=ticket.customer_id,
+            )
+            approval, created = self._save_pending_approval(
                 request,
                 ticket=ticket,
                 conversation_id=conversation_id,
                 principal=principal,
             )
+            if created:
+                self.event_service.emit(
+                    CXEventType.APPROVAL_REQUESTED,
+                    customer_id=ticket.customer_id,
+                    ticket_id=ticket.ticket_id,
+                    conversation_id=conversation_id,
+                    execution_id=outcome.execution_id,
+                    actor_type=ActorType.AI_AGENT,
+                    actor_id=SUPPORT_AGENT_ID,
+                    data={
+                        "approval_id": approval.approval_id,
+                        "harness_request_id": approval.harness_request_id,
+                        "tool_id": approval.tool_id,
+                        "action_digest": approval.action_digest,
+                    },
+                )
             self.workflow_state.set_approval_waiting(
                 principal,
                 customer_id=ticket.customer_id,
@@ -325,7 +411,9 @@ class SupportService:
                 execution_id=outcome.execution_id,
             )
             self.conversations.transition_ticket(
-                ticket.ticket_id, TicketStatus.WAITING_APPROVAL
+                ticket.ticket_id,
+                TicketStatus.WAITING_APPROVAL,
+                execution_id=outcome.execution_id,
             )
             message = self._append_agent_message(
                 conversation_id,
@@ -344,6 +432,11 @@ class SupportService:
                 response="This request needs human approval before the action can run.",
             )
 
+        self._update_execution_reference(
+            outcome,
+            pending=False,
+            customer_id=ticket.customer_id,
+        )
         if outcome.status is OutcomeStatus.COMPLETED:
             return self._completed(
                 outcome,
@@ -478,6 +571,7 @@ class SupportService:
             ticket.ticket_id,
             resolution_code="AGENT_COMPLETED",
             outcome_type="support_resolved",
+            execution_id=outcome.execution_id,
             metadata={
                 "execution_id": outcome.execution_id,
                 "harness_outcome_id": outcome.outcome_id,
@@ -531,6 +625,10 @@ class SupportService:
             else EscalationReason.AGENT_UNCERTAIN
         )
         response = self._safe_response(None, reason)
+        self._fail_execution_reference(
+            execution_id,
+            customer_id=ticket.customer_id,
+        )
         escalation = self._escalate(
             ticket=ticket,
             conversation_id=conversation_id,
@@ -601,11 +699,11 @@ class SupportService:
         ticket: Ticket,
         conversation_id: str,
         principal: PrincipalContext,
-    ) -> ApprovalRecord:
+    ) -> tuple[ApprovalRecord, bool]:
         existing = self.repositories.approvals(execution_id=request.execution_id)
         for record in existing:
             if record.harness_request_id == request.request_id:
-                return record
+                return record, False
         action = request.action.tool_call
         record = ApprovalRecord(
             approval_id=self.assembly.factory.new_id("approval"),
@@ -620,7 +718,169 @@ class SupportService:
             action_summary=f"Review {action.tool_id} action {request.action_digest}.",
             requested_at=request.created_at,
         )
-        return self.repositories.save_approval(record)
+        return self.repositories.save_approval(record), True
+
+    def _start_execution_reference(
+        self,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+        execution_id: str,
+    ) -> ExecutionReference:
+        reference = ExecutionReference(
+            execution_id=execution_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation_id,
+            agent_id=SUPPORT_AGENT_ID,
+            agent_version=SUPPORT_AGENT_VERSION,
+            started_at=now(),
+        )
+        return self.repositories.save_execution_reference(reference)
+
+    def _update_execution_reference(
+        self,
+        outcome: AgentOutcome,
+        *,
+        pending: bool,
+        customer_id: str,
+    ) -> ExecutionReference | None:
+        reference = self.repositories.execution_reference(outcome.execution_id)
+        if reference is None:
+            return None
+        trace_reference = self._trace_reference(
+            outcome.execution_id,
+            fallback=outcome.trace_id,
+        )
+        updated = reference.model_copy(
+            update={
+                "trace_reference": trace_reference,
+                "outcome_status": outcome.status.value,
+                "completed_at": None if pending else now(),
+            }
+        )
+        saved = self.repositories.save_execution_reference(updated)
+        if not pending:
+            event_type = (
+                CXEventType.AGENT_EXECUTION_FAILED
+                if outcome.status
+                in {OutcomeStatus.FAILED, OutcomeStatus.TIMED_OUT}
+                else CXEventType.AGENT_EXECUTION_COMPLETED
+            )
+            data = {
+                "outcome_id": outcome.outcome_id,
+                "outcome_status": outcome.status.value,
+                **(
+                    {"trace_reference": trace_reference}
+                    if trace_reference is not None
+                    else {}
+                ),
+                **(
+                    {"error_code": outcome.error_code}
+                    if outcome.error_code is not None
+                    else {}
+                ),
+            }
+            self.event_service.emit(
+                event_type,
+                customer_id=customer_id,
+                ticket_id=reference.ticket_id,
+                conversation_id=reference.conversation_id,
+                execution_id=reference.execution_id,
+                actor_type=ActorType.AI_AGENT,
+                actor_id=reference.agent_id,
+                data=data,
+            )
+        return saved
+
+    def _fail_execution_reference(
+        self,
+        execution_id: str,
+        *,
+        customer_id: str,
+    ) -> None:
+        reference = self.repositories.execution_reference(execution_id)
+        if reference is None:
+            return
+        trace_reference = self._trace_reference(execution_id, fallback=None)
+        updated = reference.model_copy(
+            update={
+                "trace_reference": trace_reference,
+                "outcome_status": OutcomeStatus.FAILED.value,
+                "completed_at": now(),
+            }
+        )
+        self.repositories.save_execution_reference(updated)
+        data = {"outcome_status": OutcomeStatus.FAILED.value}
+        if trace_reference is not None:
+            data["trace_reference"] = trace_reference
+        self.event_service.emit(
+            CXEventType.AGENT_EXECUTION_FAILED,
+            customer_id=customer_id,
+            ticket_id=reference.ticket_id,
+            conversation_id=reference.conversation_id,
+            execution_id=reference.execution_id,
+            actor_type=ActorType.AI_AGENT,
+            actor_id=reference.agent_id,
+            data=data,
+        )
+
+    def _record_tool_events(
+        self,
+        outcome: AgentOutcome,
+        *,
+        ticket: Ticket,
+        conversation_id: str,
+    ) -> None:
+        for call in outcome.tool_calls:
+            data = {
+                "call_id": call.call_id,
+                "step_id": call.step_id,
+                "tool_id": call.tool_id,
+                "tool_version": call.tool_version,
+                "result_status": call.result_status.value,
+                **(
+                    {"evidence_ids": list(call.evidence_ids)}
+                    if call.evidence_ids
+                    else {}
+                ),
+                **(
+                    {"permission_reason_code": call.permission_reason_code}
+                    if call.permission_reason_code is not None
+                    else {}
+                ),
+            }
+            event_kwargs = {
+                "customer_id": ticket.customer_id,
+                "ticket_id": ticket.ticket_id,
+                "conversation_id": conversation_id,
+                "execution_id": outcome.execution_id,
+                "actor_type": ActorType.AI_AGENT,
+                "actor_id": SUPPORT_AGENT_ID,
+                "data": data,
+            }
+            self.event_service.emit(CXEventType.AGENT_TOOL_CALLED, **event_kwargs)
+            if call.result_status is ToolResultStatus.SUCCEEDED:
+                self.event_service.emit(
+                    CXEventType.AGENT_TOOL_SUCCEEDED,
+                    **event_kwargs,
+                )
+            elif call.result_status is not ToolResultStatus.APPROVAL_REQUIRED:
+                self.event_service.emit(
+                    CXEventType.AGENT_TOOL_FAILED,
+                    **event_kwargs,
+                )
+
+    def _trace_reference(
+        self,
+        execution_id: str,
+        *,
+        fallback: str | None,
+    ) -> str | None:
+        try:
+            trace = self.agent.trace_for(execution_id)
+        except Exception:  # noqa: BLE001 - trace lookup must not block support.
+            return fallback
+        return trace.trace_id or fallback
 
     def _bind_memory(
         self,

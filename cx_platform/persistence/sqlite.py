@@ -14,7 +14,9 @@ from cx_platform.domain.models import (
     Conversation,
     CustomerBinding,
     CustomerHistory,
+    CXEvent,
     Escalation,
+    ExecutionReference,
     MemoryReference,
     Message,
     Outcome,
@@ -25,7 +27,7 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class CXDatabase:
-    schema_version = 6
+    schema_version = 8
 
     def __init__(self, path: str = "cx_platform.db") -> None:
         self.path = path
@@ -211,6 +213,71 @@ class CXDatabase:
                         REFERENCES csat(csat_id)
                         ON DELETE RESTRICT
                 );
+                CREATE TABLE IF NOT EXISTS execution_references (
+                    execution_id TEXT PRIMARY KEY,
+                    ticket_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    agent_version TEXT NOT NULL,
+                    trace_reference TEXT,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    outcome_status TEXT,
+                    FOREIGN KEY (ticket_id)
+                        REFERENCES tickets(ticket_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (conversation_id)
+                        REFERENCES conversations(conversation_id)
+                        ON DELETE RESTRICT
+                );
+                CREATE INDEX IF NOT EXISTS idx_execution_references_ticket
+                    ON execution_references(ticket_id);
+                CREATE INDEX IF NOT EXISTS idx_execution_references_conversation
+                    ON execution_references(conversation_id);
+                CREATE TABLE IF NOT EXISTS cx_events (
+                    event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT UNIQUE NOT NULL,
+                    event_type TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    customer_id TEXT,
+                    ticket_id TEXT,
+                    conversation_id TEXT,
+                    message_id TEXT,
+                    execution_id TEXT,
+                    actor_type TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    data TEXT NOT NULL,
+                    FOREIGN KEY (customer_id)
+                        REFERENCES customer_bindings(customer_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (ticket_id)
+                        REFERENCES tickets(ticket_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (conversation_id)
+                        REFERENCES conversations(conversation_id)
+                        ON DELETE RESTRICT,
+                    FOREIGN KEY (message_id)
+                        REFERENCES messages(message_id)
+                        ON DELETE RESTRICT
+                );
+                CREATE INDEX IF NOT EXISTS idx_cx_events_customer
+                    ON cx_events(customer_id, event_sequence);
+                CREATE INDEX IF NOT EXISTS idx_cx_events_ticket
+                    ON cx_events(ticket_id, event_sequence);
+                CREATE INDEX IF NOT EXISTS idx_cx_events_conversation
+                    ON cx_events(conversation_id, event_sequence);
+                CREATE INDEX IF NOT EXISTS idx_cx_events_execution
+                    ON cx_events(execution_id, event_sequence);
+                CREATE TRIGGER IF NOT EXISTS cx_events_no_update
+                BEFORE UPDATE ON cx_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'CX events are append-only');
+                END;
+                CREATE TRIGGER IF NOT EXISTS cx_events_no_delete
+                BEFORE DELETE ON cx_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'CX events are append-only');
+                END;
                 """
             )
 
@@ -245,6 +312,49 @@ class CXRepositories:
 
     def save_memory_reference(self, item: MemoryReference) -> MemoryReference:
         return self._save("memory_references", item)
+
+    def save_execution_reference(
+        self,
+        item: ExecutionReference,
+    ) -> ExecutionReference:
+        return self._save("execution_references", item)
+
+    def append_event(self, item: CXEvent) -> CXEvent:
+        """Append one event without update or conflict behavior."""
+
+        data = item.model_dump(mode="json")
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO cx_events (
+                    event_id,
+                    event_type,
+                    occurred_at,
+                    customer_id,
+                    ticket_id,
+                    conversation_id,
+                    message_id,
+                    execution_id,
+                    actor_type,
+                    actor_id,
+                    data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data["event_id"],
+                    data["event_type"],
+                    data["occurred_at"],
+                    data["customer_id"],
+                    data["ticket_id"],
+                    data["conversation_id"],
+                    data["message_id"],
+                    data["execution_id"],
+                    data["actor_type"],
+                    data["actor_id"],
+                    json.dumps(data["data"], separators=(",", ":")),
+                ),
+            )
+        return item
 
     def ticket(self, ticket_id: str) -> Ticket | None:
         return self._one("tickets", "ticket_id", ticket_id, Ticket)
@@ -325,6 +435,40 @@ class CXRepositories:
                 values,
             ).fetchall()
         return [self._model(row, MemoryReference) for row in rows]
+
+    def execution_reference(self, execution_id: str) -> ExecutionReference | None:
+        return self._one(
+            "execution_references",
+            "execution_id",
+            execution_id,
+            ExecutionReference,
+        )
+
+    def events(
+        self,
+        *,
+        after: str | None = None,
+        limit: int = 100,
+    ) -> list[CXEvent]:
+        """Return events in append order after an ID or numeric cursor."""
+
+        if limit < 1:
+            raise ValueError("event limit must be positive")
+        cursor = self._event_cursor(after)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT event_id, event_type, occurred_at, customer_id,
+                       ticket_id, conversation_id, message_id, execution_id,
+                       actor_type, actor_id, data
+                FROM cx_events
+                WHERE event_sequence > ?
+                ORDER BY event_sequence
+                LIMIT ?
+                """,
+                (cursor, limit),
+            ).fetchall()
+        return [self._model(row, CXEvent) for row in rows]
 
     def customer_history(self, customer_id: str) -> CustomerHistory:
         if self.binding(customer_id) is None:
@@ -456,12 +600,35 @@ class CXRepositories:
             rows = connection.execute(statement, (customer_id,)).fetchall()
         return [self._model(row, factory) for row in rows]
 
+    def _event_cursor(self, after: str | None) -> int:
+        if after is None:
+            return 0
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT event_sequence FROM cx_events WHERE event_id=?",
+                (after,),
+            ).fetchone()
+        if row is not None:
+            return int(row["event_sequence"])
+        try:
+            cursor = int(after)
+        except (TypeError, ValueError) as exc:
+            raise KeyError(f"unknown CX event cursor: {after}") from exc
+        if cursor < 0:
+            raise ValueError("event cursor must not be negative")
+        return cursor
+
     @staticmethod
     def _model(row: sqlite3.Row, factory: Callable[..., T]) -> T:
         data: dict[str, Any] = dict(row)
         for key, value in data.items():
             if key.endswith("_at") and value is not None:
                 data[key] = datetime.fromisoformat(value)
-            elif key == "metadata" or key in {"actions_attempted", "tool_result_refs"}:
+            elif key in {
+                "metadata",
+                "actions_attempted",
+                "tool_result_refs",
+                "data",
+            }:
                 data[key] = json.loads(value)
         return factory(**data)

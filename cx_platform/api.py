@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from cx_platform.domain.models import CXEvent, ExecutionReference
 from cx_platform.services.support import (
     SupportService,
     SupportServiceError,
@@ -83,6 +84,23 @@ def create_app(service: SupportService) -> FastAPI:
             )
         except SupportServiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/events", response_model=list[CXEvent])
+    def events(after: str | None = None, limit: int = 100) -> list[CXEvent]:
+        try:
+            return service.events(after=after, limit=limit)
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(
+        "/executions/{execution_id}",
+        response_model=ExecutionReference,
+    )
+    def execution(execution_id: str) -> ExecutionReference:
+        reference = service.execution_reference(execution_id)
+        if reference is None:
+            raise HTTPException(status_code=404, detail="execution was not found")
+        return reference
 
     return app
 

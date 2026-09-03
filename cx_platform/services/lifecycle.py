@@ -7,6 +7,7 @@ from cx_platform.domain.models import (
     ActorType,
     Conversation,
     ConversationStatus,
+    CXEventType,
     Escalation,
     EscalationReason,
     Message,
@@ -16,6 +17,7 @@ from cx_platform.domain.models import (
     now,
 )
 from cx_platform.persistence.sqlite import CXRepositories
+from cx_platform.services.events import CXEventService
 
 
 class InvalidTicketTransition(ValueError):
@@ -49,8 +51,13 @@ _TRANSITIONS = {
 
 
 class ConversationService:
-    def __init__(self, repositories: CXRepositories) -> None:
+    def __init__(
+        self,
+        repositories: CXRepositories,
+        event_service: CXEventService | None = None,
+    ) -> None:
         self.repositories = repositories
+        self.event_service = event_service or CXEventService(repositories)
 
     def start(
         self,
@@ -75,6 +82,19 @@ class ConversationService:
             customer_id=customer_id,
         )
         self.repositories.save_conversation(conversation)
+        self.event_service.emit(
+            CXEventType.TICKET_CREATED,
+            customer_id=customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation.conversation_id,
+            data={"priority": priority},
+        )
+        self.event_service.emit(
+            CXEventType.CONVERSATION_STARTED,
+            customer_id=customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=conversation.conversation_id,
+        )
         return conversation, ticket
 
     def append_message(
@@ -96,7 +116,25 @@ class ConversationService:
             content=content,
             execution_id=execution_id,
         )
-        return self.repositories.save_message(message)
+        saved = self.repositories.save_message(message)
+        event_type = {
+            ActorType.CUSTOMER: CXEventType.MESSAGE_CUSTOMER_RECEIVED,
+            ActorType.AI_AGENT: CXEventType.MESSAGE_AGENT_SENT,
+        }.get(actor_type)
+        if event_type is not None:
+            conversation = self.repositories.conversation(conversation_id)
+            self.event_service.emit(
+                event_type,
+                customer_id=conversation.customer_id if conversation else None,
+                ticket_id=conversation.ticket_id if conversation else None,
+                conversation_id=conversation_id,
+                message_id=saved.message_id,
+                execution_id=execution_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                data={"content_length": len(content)},
+            )
+        return saved
 
     def end_conversation(self, conversation_id: str) -> Conversation:
         conversation = self.repositories.conversation(conversation_id)
@@ -104,7 +142,7 @@ class ConversationService:
             raise KeyError(conversation_id)
         if conversation.status is ConversationStatus.ENDED:
             return conversation
-        return self.repositories.save_conversation(
+        saved = self.repositories.save_conversation(
             conversation.model_copy(
                 update={
                     "status": ConversationStatus.ENDED,
@@ -112,6 +150,13 @@ class ConversationService:
                 }
             )
         )
+        self.event_service.emit(
+            CXEventType.CONVERSATION_ENDED,
+            customer_id=saved.customer_id,
+            ticket_id=saved.ticket_id,
+            conversation_id=saved.conversation_id,
+        )
+        return saved
 
     def transition_ticket(
         self,
@@ -119,6 +164,7 @@ class ConversationService:
         status: TicketStatus,
         *,
         resolution_code: str | None = None,
+        execution_id: str | None = None,
     ) -> Ticket:
         ticket = self.repositories.ticket(ticket_id)
         if ticket is None:
@@ -135,7 +181,33 @@ class ConversationService:
                 "resolved_at": resolved_at,
             }
         )
-        return self.repositories.save_ticket(updated_ticket)
+        saved = self.repositories.save_ticket(updated_ticket)
+        self.event_service.emit(
+            CXEventType.TICKET_STATUS_CHANGED,
+            customer_id=saved.customer_id,
+            ticket_id=saved.ticket_id,
+            conversation_id=saved.conversation_id,
+            execution_id=execution_id,
+            data={
+                "from_status": ticket.status.value,
+                "to_status": saved.status.value,
+                **(
+                    {"resolution_code": saved.resolution_code}
+                    if saved.resolution_code is not None
+                    else {}
+                ),
+            },
+        )
+        if saved.status is TicketStatus.RESOLVED:
+            self.event_service.emit(
+                CXEventType.TICKET_RESOLVED,
+                customer_id=saved.customer_id,
+                ticket_id=saved.ticket_id,
+                conversation_id=saved.conversation_id,
+                execution_id=execution_id,
+                data={"resolution_code": saved.resolution_code or ""},
+            )
+        return saved
 
     def resolve(
         self,
@@ -144,19 +216,37 @@ class ConversationService:
         resolution_code: str,
         outcome_type: str,
         metadata: dict[str, object] | None = None,
+        execution_id: str | None = None,
     ) -> Ticket:
+        outcome_metadata = metadata or {}
+        linked_execution_id = execution_id or _metadata_string(
+            outcome_metadata,
+            "execution_id",
+        )
         ticket = self.transition_ticket(
             ticket_id,
             TicketStatus.RESOLVED,
             resolution_code=resolution_code,
+            execution_id=linked_execution_id,
         )
         outcome = Outcome(
             outcome_id=self._id("outcome"),
             ticket_id=ticket_id,
             outcome_type=outcome_type,
-            metadata=metadata or {},
+            metadata=outcome_metadata,
         )
-        self.repositories.save_outcome(outcome)
+        saved_outcome = self.repositories.save_outcome(outcome)
+        self.event_service.emit(
+            CXEventType.OUTCOME_RECORDED,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=ticket.conversation_id,
+            execution_id=linked_execution_id,
+            data={
+                "outcome_id": saved_outcome.outcome_id,
+                "outcome_type": saved_outcome.outcome_type,
+            },
+        )
         return ticket
 
     def escalate(
@@ -173,11 +263,16 @@ class ConversationService:
         actions_attempted: list[str] | None = None,
         tool_result_refs: list[str] | None = None,
     ) -> Escalation:
-        self.transition_ticket(ticket_id, TicketStatus.ESCALATED)
+        ticket = self.transition_ticket(
+            ticket_id,
+            TicketStatus.ESCALATED,
+            execution_id=execution_id,
+        )
+        linked_conversation_id = conversation_id or ticket.conversation_id
         escalation = Escalation(
             escalation_id=self._id("esc"),
             ticket_id=ticket_id,
-            conversation_id=conversation_id,
+            conversation_id=linked_conversation_id,
             execution_id=execution_id,
             customer_goal=customer_goal,
             active_order_id=active_order_id,
@@ -187,7 +282,19 @@ class ConversationService:
             reason=reason,
             summary=summary,
         )
-        return self.repositories.save_escalation(escalation)
+        saved = self.repositories.save_escalation(escalation)
+        self.event_service.emit(
+            CXEventType.TICKET_ESCALATED,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=linked_conversation_id,
+            execution_id=execution_id,
+            data={
+                "escalation_id": saved.escalation_id,
+                "reason": saved.reason.value,
+            },
+        )
+        return saved
 
     def submit_csat(
         self,
@@ -207,8 +314,40 @@ class ConversationService:
             score=score,
             comment=comment,
         )
-        return self.repositories.save_csat(csat)
+        saved = self.repositories.save_csat(csat)
+        outcomes = self.repositories.outcomes(ticket_id)
+        latest_outcome = outcomes[-1] if outcomes else None
+        linked_execution_id = (
+            _metadata_string(latest_outcome.metadata, "execution_id")
+            if latest_outcome is not None
+            else None
+        )
+        self.event_service.emit(
+            CXEventType.CSAT_RECEIVED,
+            customer_id=ticket.customer_id,
+            ticket_id=ticket.ticket_id,
+            conversation_id=ticket.conversation_id,
+            execution_id=linked_execution_id,
+            actor_type=ActorType.CUSTOMER,
+            actor_id=ticket.customer_id,
+            data={
+                "csat_id": saved.csat_id,
+                "score": saved.score,
+                "comment_present": comment is not None,
+                **(
+                    {"outcome_id": latest_outcome.outcome_id}
+                    if latest_outcome is not None
+                    else {}
+                ),
+            },
+        )
+        return saved
 
     @staticmethod
     def _id(prefix: str) -> str:
         return f"{prefix}_{uuid4().hex}"
+
+
+def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    return value if isinstance(value, str) and value else None

@@ -211,15 +211,16 @@ def build_support_tools(
         return result
 
     def escalate_to_human(
-        _: ExecutionContext,
+        context: ExecutionContext,
         arguments: EscalationInput,
     ) -> EscalationOutput:
+        execution_id = arguments.execution_id or context.execution_id
         escalation = conversations.escalate(
             arguments.ticket_id,
             reason=arguments.reason,
             summary=arguments.summary,
             conversation_id=arguments.conversation_id,
-            execution_id=arguments.execution_id,
+            execution_id=execution_id,
             customer_goal=arguments.customer_goal,
             active_order_id=arguments.active_order_id,
             active_item_id=arguments.active_item_id,
