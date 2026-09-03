@@ -1,6 +1,13 @@
 import sqlite3
 
 import pytest
+from enterprise_agent_harness import (
+    AgentLifecycleStatus,
+    DefaultPermissionBroker,
+    OutcomeStatus,
+    PolicyDefinition,
+    PolicyEffect,
+)
 from fastapi.testclient import TestClient
 from test_cx_support import make_support_service
 
@@ -84,12 +91,11 @@ def test_cx_events_poll_after_id_and_reject_duplicate_append() -> None:
 
     with pytest.raises(sqlite3.IntegrityError):
         repositories.append_event(events[0])
-    with pytest.raises(sqlite3.IntegrityError):
-        with repositories.database.connect() as connection:
-            connection.execute(
-                "UPDATE cx_events SET actor_id=? WHERE event_id=?",
-                ("operator-01", events[0].event_id),
-            )
+    with pytest.raises(sqlite3.IntegrityError), repositories.database.connect() as connection:
+        connection.execute(
+            "UPDATE cx_events SET actor_id=? WHERE event_id=?",
+            ("operator-01", events[0].event_id),
+        )
 
 
 def test_failed_harness_tool_emits_failure_without_success() -> None:
@@ -112,6 +118,48 @@ def test_failed_harness_tool_emits_failure_without_success() -> None:
     )
     assert not any(
         event.event_type is CXEventType.AGENT_TOOL_SUCCEEDED
+        for event in execution_events
+    )
+
+
+def test_governance_tool_rejection_is_not_recorded_as_generic_failure() -> None:
+    deny_policy = PolicyDefinition(
+        policy_id="test-deny-tool",
+        version="1.0.0",
+        description="Deny this support action.",
+        default_effect=PolicyEffect.DENY,
+        lifecycle=AgentLifecycleStatus.ACTIVE,
+    )
+    service, _, conversation, _, _ = make_support_service(
+        tool_id="request_return",
+        arguments={
+            "order_id": "ord_001",
+            "line_id": "line_001",
+            "quantity": 1,
+            "reason": "Damaged",
+        },
+        permission_broker=DefaultPermissionBroker(policies=[deny_policy]),
+    )
+
+    result = service.handle_message(
+        conversation.conversation_id,
+        "Please return the damaged item.",
+    )
+    execution_events = [
+        event
+        for event in service.events()
+        if event.execution_id == result.execution_id
+    ]
+    tool_called = next(
+        event
+        for event in execution_events
+        if event.event_type is CXEventType.AGENT_TOOL_CALLED
+    )
+
+    assert result.status is OutcomeStatus.REFUSED
+    assert tool_called.data["result_status"] == "permission_denied"
+    assert not any(
+        event.event_type is CXEventType.AGENT_TOOL_FAILED
         for event in execution_events
     )
 

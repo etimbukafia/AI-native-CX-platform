@@ -859,12 +859,15 @@ class SupportService:
                 "data": data,
             }
             self.event_service.emit(CXEventType.AGENT_TOOL_CALLED, **event_kwargs)
-            if call.result_status is ToolResultStatus.SUCCEEDED:
+            if call.result_status in {
+                ToolResultStatus.SUCCEEDED,
+                ToolResultStatus.EMPTY,
+            }:
                 self.event_service.emit(
                     CXEventType.AGENT_TOOL_SUCCEEDED,
                     **event_kwargs,
                 )
-            elif call.result_status is not ToolResultStatus.APPROVAL_REQUIRED:
+            elif call.result_status is ToolResultStatus.FAILED:
                 self.event_service.emit(
                     CXEventType.AGENT_TOOL_FAILED,
                     **event_kwargs,
