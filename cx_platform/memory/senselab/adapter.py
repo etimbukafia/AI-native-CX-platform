@@ -104,7 +104,7 @@ class SenseLabMemory:
         scope: MemoryScope,
         query: str | None = None,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         min_confidence: float = 0.0,
         limit: int = 5,
     ) -> list[MemoryEntry]:
@@ -114,7 +114,7 @@ class SenseLabMemory:
         body = build_search_request(
             scope=scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
             query=query,
             min_confidence=min_confidence,
             limit=limit,
@@ -124,7 +124,7 @@ class SenseLabMemory:
             payload,
             scope=scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
             execution_id=execution_id,
         )
         for entry in entries:
@@ -148,7 +148,7 @@ class SenseLabMemory:
         memory_type: MemoryKind,
         confidence: float = 1.0,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         confirmed: bool = False,
         conversation_id: str | None = None,
     ) -> MemoryEntry:
@@ -159,7 +159,7 @@ class SenseLabMemory:
         body = build_write_request(
             scope=scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
             key=key,
             value=value,
             memory_type=memory_type,
@@ -173,7 +173,7 @@ class SenseLabMemory:
             payload,
             scope=scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
             key=key,
             execution_id=execution_id,
             conversation_id=conversation_id,

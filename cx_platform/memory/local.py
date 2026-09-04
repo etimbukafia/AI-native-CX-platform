@@ -85,7 +85,7 @@ class LocalMemory:
         scope: MemoryScope,
         query: str | None = None,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         min_confidence: float = 0.0,
         limit: int = 5,
     ) -> list[MemoryEntry]:
@@ -93,14 +93,14 @@ class LocalMemory:
         self._validate_search(
             scope=scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
             min_confidence=min_confidence,
             limit=limit,
         )
         entity_path = self._entity_path(
             scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
         )
         query_text = query.lower().strip() if query else None
         with self._lock:
@@ -154,7 +154,7 @@ class LocalMemory:
         memory_type: MemoryKind,
         confidence: float = 1.0,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         confirmed: bool = False,
         conversation_id: str | None = None,
     ) -> MemoryEntry:
@@ -167,13 +167,13 @@ class LocalMemory:
             memory_type=memory_type,
             confidence=confidence,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
             confirmed=confirmed,
         )
         entity_path = self._entity_path(
             scope,
             customer_id=customer_id,
-            capability_id=capability_id,
+            skill_id=skill_id,
         )
         entry_key = (scope, entity_path, key)
         with self._lock:
@@ -192,7 +192,7 @@ class LocalMemory:
                 scope=scope,
                 customer_id=customer_id,
                 conversation_id=conversation_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 provenance=MemoryProvenance(
                     provider=self.provider,
                     entry_id=memory_id,
@@ -291,7 +291,7 @@ class LocalMemory:
         *,
         scope: MemoryScope,
         customer_id: str | None,
-        capability_id: str | None,
+        skill_id: str | None,
         min_confidence: float,
         limit: int,
     ) -> None:
@@ -299,7 +299,7 @@ class LocalMemory:
             raise ValueError(f"limit must be between 1 and {self.max_results}")
         if not 0.0 <= min_confidence <= 1.0:
             raise ValueError("min_confidence must be between 0 and 1")
-        self._validate_scope(scope, customer_id, capability_id)
+        self._validate_scope(scope, customer_id, skill_id)
 
     def _validate_write(
         self,
@@ -310,7 +310,7 @@ class LocalMemory:
         memory_type: MemoryKind,
         confidence: float,
         customer_id: str | None,
-        capability_id: str | None,
+        skill_id: str | None,
         confirmed: bool,
     ) -> None:
         if not key or len(key) > 120 or not _IDENTIFIER.fullmatch(key):
@@ -319,7 +319,7 @@ class LocalMemory:
             raise ValueError("memory value must be between 1 and 2000 characters")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
-        self._validate_scope(scope, customer_id, capability_id)
+        self._validate_scope(scope, customer_id, skill_id)
         if scope is MemoryScope.CUSTOMER and not confirmed:
             raise ValueError("customer memory requires explicit confirmation")
         if self._contains_current_business_key(key):
@@ -335,16 +335,16 @@ class LocalMemory:
     def _validate_scope(
         scope: MemoryScope,
         customer_id: str | None,
-        capability_id: str | None,
+        skill_id: str | None,
     ) -> None:
         if scope is MemoryScope.CUSTOMER:
             if not customer_id or not _IDENTIFIER.fullmatch(customer_id):
                 raise ValueError("customer memory requires a valid customer ID")
-            if capability_id is not None:
-                raise ValueError("customer memory cannot use a capability ID")
+            if skill_id is not None:
+                raise ValueError("customer memory cannot use a skill ID")
         elif scope is MemoryScope.SHARED_SUPPORT:
-            if not capability_id or not _IDENTIFIER.fullmatch(capability_id):
-                raise ValueError("shared memory requires a capability ID")
+            if not skill_id or not _IDENTIFIER.fullmatch(skill_id):
+                raise ValueError("shared memory requires a skill ID")
             if customer_id is not None:
                 raise ValueError("shared memory cannot use a customer ID")
 
@@ -363,13 +363,13 @@ class LocalMemory:
         scope: MemoryScope,
         *,
         customer_id: str | None,
-        capability_id: str | None,
+        skill_id: str | None,
     ) -> str:
         if scope is MemoryScope.CUSTOMER:
             assert customer_id is not None
             return f"customers/{customer_id}"
-        assert capability_id is not None
-        return f"support/{capability_id}"
+        assert skill_id is not None
+        return f"support/{skill_id}"
 
     def _trim_entries(self) -> None:
         if len(self._entries) <= self.max_entries:

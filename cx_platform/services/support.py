@@ -1113,7 +1113,7 @@ class SupportService:
             execution_id=execution_id,
             scope=MemoryScope.SHARED_SUPPORT,
             query=query,
-            capability_id="customer_support",
+            skill_id="customer_support",
         )
         strategy.bind(
             principal,
@@ -1129,7 +1129,7 @@ class SupportService:
         scope: MemoryScope,
         query: str,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
     ) -> list[MemoryEntry]:
         try:
             return self.memory.search_relevant(
@@ -1137,7 +1137,7 @@ class SupportService:
                 scope=scope,
                 query=query,
                 customer_id=customer_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 limit=3,
             )
         except Exception:  # noqa: BLE001 - memory is advisory and must not block support.
@@ -1263,7 +1263,6 @@ class SupportService:
             "permission_denied",
             "required_permission_missing",
             "tool_not_authorized",
-            "tool_not_in_capability",
             "tool_version_not_authorized",
             "tool_not_in_execution_allowlist",
             "runtime_authorization_failed",

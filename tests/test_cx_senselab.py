@@ -80,7 +80,7 @@ def test_senselab_adapter_uses_typed_documented_http_operations() -> None:
     found = memory.search_relevant(
         execution_id="exec_01",
         scope=MemoryScope.SHARED_SUPPORT,
-        capability_id="delivery_resolution",
+        skill_id="delivery_resolution",
         query="delivery",
     )
     written = memory.write_memory(

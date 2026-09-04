@@ -3,6 +3,7 @@ import sqlite3
 import pytest
 from enterprise_agent_harness import (
     AgentLifecycleStatus,
+    ComponentType,
     DefaultPermissionBroker,
     DeterministicProvider,
     OutcomeStatus,
@@ -77,7 +78,28 @@ def test_support_agent_links_customer_and_agent_messages_to_one_execution() -> N
 
     result = service.handle_message(conversation.conversation_id, "Where is my order?")
 
-    assert service.agent.manifest.manifest_id == "customer-support-agent@1.0.0"
+    manifest = service.agent.manifest
+    assert manifest.manifest_id == "customer-support-agent@1.0.0"
+    assert manifest.prompt_ref.component_type is ComponentType.PROMPT
+    assert manifest.prompt_ref.identity == "prompt:customer-support-prompt@1.0.0"
+    assert manifest.agent.goal == (
+        "Resolve supported commerce customer-service requests safely and accurately."
+    )
+    assert len(manifest.skill_refs) == 7
+    assert [ref.identity for ref in manifest.skill_refs] == [
+        f"skill:{skill.skill_id}@{skill.version}"
+        for skill in service.assembly.skills.list()
+    ]
+    assert [ref.identity for ref in manifest.tool_refs] == [
+        f"tool:{tool.tool_id}@{tool.version}"
+        for tool in service.assembly.tools.list()
+    ]
+    assert [ref.identity for ref in manifest.policy_refs] == [
+        "policy:customer-support-policy@1.0.0"
+    ]
+    assert {ref.component_type for ref in manifest.skill_refs} == {ComponentType.SKILL}
+    assert {ref.component_type for ref in manifest.tool_refs} == {ComponentType.TOOL}
+    assert {ref.component_type for ref in manifest.policy_refs} == {ComponentType.POLICY}
     assert result.status is OutcomeStatus.COMPLETED
     assert result.ticket_status is TicketStatus.RESOLVED
     messages = repositories.messages(conversation.conversation_id)
@@ -96,6 +118,9 @@ def test_support_agent_links_customer_and_agent_messages_to_one_execution() -> N
     )
     assert workflow.agent_id == SUPPORT_AGENT_ID
     assert workflow.agent_version == SUPPORT_AGENT_VERSION
+    trace = service.agent.trace_for(result.execution_id)
+    assert trace.prompt_ref == manifest.prompt_ref
+    assert trace.skill_refs == manifest.skill_refs
     assert repositories.ticket(ticket.ticket_id).status is TicketStatus.RESOLVED
 
 

@@ -17,7 +17,7 @@ def test_opt_in_senselab_live_search_smoke() -> None:
         result = memory.search_relevant(
             execution_id="cx_live_smoke",
             scope=MemoryScope.SHARED_SUPPORT,
-            capability_id="delivery_resolution",
+            skill_id="delivery_resolution",
             limit=1,
         )
         assert isinstance(result, list)

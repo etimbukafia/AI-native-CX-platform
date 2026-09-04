@@ -54,7 +54,7 @@ class MemoryPort(Protocol):
         scope: MemoryScope,
         query: str | None = None,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         min_confidence: float = 0.0,
         limit: int = 5,
     ) -> list[MemoryEntry]: ...
@@ -69,7 +69,7 @@ class MemoryPort(Protocol):
         memory_type: MemoryKind,
         confidence: float = 1.0,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         confirmed: bool = False,
         conversation_id: str | None = None,
     ) -> MemoryEntry: ...
@@ -123,7 +123,7 @@ class ResilientMemory:
         scope: MemoryScope,
         query: str | None = None,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         min_confidence: float = 0.0,
         limit: int = 5,
     ) -> list[MemoryEntry]:
@@ -133,7 +133,7 @@ class ResilientMemory:
                 scope=scope,
                 query=query,
                 customer_id=customer_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 min_confidence=min_confidence,
                 limit=limit,
             )
@@ -152,7 +152,7 @@ class ResilientMemory:
                 scope=scope,
                 query=query,
                 customer_id=customer_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 min_confidence=min_confidence,
                 limit=limit,
             )
@@ -167,7 +167,7 @@ class ResilientMemory:
         memory_type: MemoryKind,
         confidence: float = 1.0,
         customer_id: str | None = None,
-        capability_id: str | None = None,
+        skill_id: str | None = None,
         confirmed: bool = False,
         conversation_id: str | None = None,
     ) -> MemoryEntry:
@@ -180,7 +180,7 @@ class ResilientMemory:
                 memory_type=memory_type,
                 confidence=confidence,
                 customer_id=customer_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 confirmed=confirmed,
                 conversation_id=conversation_id,
             )
@@ -202,7 +202,7 @@ class ResilientMemory:
                 memory_type=memory_type,
                 confidence=confidence,
                 customer_id=customer_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 confirmed=confirmed,
                 conversation_id=conversation_id,
             )

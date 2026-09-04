@@ -56,7 +56,7 @@ A separate service would add network contracts, deployment coordination, and fai
 
 Consequence:
 
-The CX application composes the runtime, agent definition, capabilities, tools, policy, state, and provider adapters in its composition root.
+The CX application composes the runtime, agent definition, skills, tools, policy, state, and provider adapters in its composition root.
 
 The architecture can later move the runtime behind a service adapter if a real deployment requires it, but v0.1 has one implementation path.
 
@@ -66,35 +66,37 @@ The architecture can later move the runtime behind a service adapter if a real d
 
 Decision:
 
-Build one customer-support agent with multiple registered capabilities.
+Build one customer-support agent with multiple registered skills.
 
 Do not build supervisor/specialist multi-agent orchestration.
 
 Reason:
 
-The business scenarios test customer-service capability breadth, not multi-agent topology.
+The business scenarios test customer-service skill breadth, not multi-agent topology.
 
 Consequence:
 
-Capability boundaries remain visible in the registry without introducing delegation complexity.
+Skill boundaries remain visible in the registry without introducing delegation complexity.
 
 ---
 
-## AD-005 - Capabilities, not local skills
+## AD-005 - Harness skills, not a local skill framework
 
 Decision:
 
-Use capability contracts from https://github.com/etimbukafia/enterprise-agent-harness.
+Use the current `SkillDefinition` and `SkillRegistry` contracts from https://github.com/etimbukafia/enterprise-agent-harness.
 
-Do not add a separate `Skill` framework inside the CX platform.
+Use one versioned `PromptDefinition` for support-agent behavioral instructions.
+
+Do not add a separate skill framework inside the CX platform.
 
 Reason:
 
-Capabilities already provide the correct enterprise-level abstraction for what the agent can accomplish.
+Harness skills provide the enterprise-level grouping for the customer-service jobs the agent can accomplish, while prompts provide behavior guidance.
 
 Consequence:
 
-Tools remain atomic operations. Capabilities group the business jobs that the support agent can perform.
+Tools remain atomic operations. Skills group the business jobs that the support agent can perform. Policy, permission, and approval contracts remain the authority boundary.
 
 ---
 

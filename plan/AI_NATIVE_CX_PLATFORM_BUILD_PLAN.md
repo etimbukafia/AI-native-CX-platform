@@ -77,7 +77,7 @@ That repository owns generic agent concerns such as:
 - provider boundaries;
 - typed tools;
 - tool registries;
-- capability registries;
+- skill registries;
 - permission and policy enforcement;
 - approval gates;
 - agent state;
@@ -313,17 +313,17 @@ Every external operation needed by the support agent is available through a type
 
 ---
 
-# Phase 4 - Customer-service capabilities
+# Phase 4 - Customer-service skills
 
 ## Goal
 
 Represent customer-service jobs separately from tools and scenarios.
 
-Use capability contracts from https://github.com/etimbukafia/enterprise-agent-harness.
+Use skill contracts from https://github.com/etimbukafia/enterprise-agent-harness.
 
-Do not add a second local `Skill` abstraction.
+Do not add a second local skill abstraction.
 
-## Initial capabilities
+## Initial skills
 
 ```text
 delivery_resolution
@@ -335,14 +335,14 @@ damaged_item_resolution
 missing_item_resolution
 ```
 
-Scenarios test capabilities. Scenarios are not capabilities.
+Scenarios test skills. Scenarios are not skills.
 
 ## Tasks
 
-- [ ] Define each capability and version.
+- [ ] Define each skill and version.
 - [ ] Associate relevant tools.
-- [ ] Register capabilities.
-- [ ] Attach capability references to the support-agent definition.
+- [ ] Register skills.
+- [ ] Attach skill references to the support-agent definition.
 - [ ] Add registry tests.
 
 ## Exit criteria
@@ -411,7 +411,9 @@ Do not build a custom reasoning or tool loop in CX code.
 customer-support-agent@1.0.0
 ```
 
-Use the seven Phase 4 capabilities.
+Use the seven Phase 4 skills.
+
+Reference the one versioned `customer-support-prompt@1.0.0` from the Harness `PromptRegistry`. Keep behavioral instructions in that prompt artifact and keep authority in policy, permission, and approval boundaries.
 
 ## Provider modes
 
@@ -440,7 +442,7 @@ The support agent must:
 ## Tasks
 
 - [ ] Define the support-agent configuration.
-- [ ] Register exact tool and capability versions.
+- [ ] Register exact tool and skill versions.
 - [ ] Configure state and memory boundaries.
 - [ ] Build with the Harness factory/runtime path.
 - [ ] Map CX identity to trusted runtime principal context.
@@ -558,7 +560,7 @@ outcome.recorded
 csat.received
 ```
 
-Only emit `agent.capability_selected` if trustworthy runtime evidence exists.
+CX events do not emit an inferred skill-selection event. Use Harness trace provenance for exact skill references.
 
 ## Rules
 

@@ -100,12 +100,12 @@ def test_outcome_learning_links_after_cx_outcome_and_survives_memory_failure(tmp
         key="delivery_language",
         value="Give one clear next check.",
         memory_type=MemoryKind.BELIEF,
-        capability_id="delivery_resolution",
+        skill_id="delivery_resolution",
     )
     memory.search_relevant(
         execution_id="exec_01",
         scope=MemoryScope.SHARED_SUPPORT,
-        capability_id="delivery_resolution",
+        skill_id="delivery_resolution",
     )
     learning = OutcomeLearningService(repositories, memory)
 

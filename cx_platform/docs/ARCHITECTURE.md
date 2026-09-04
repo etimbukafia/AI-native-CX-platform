@@ -35,21 +35,23 @@ The CX platform must interact with the mock business through its HTTP API. It mu
 
 Use https://github.com/etimbukafia/enterprise-agent-harness as an in-process Python library.
 
-The CX platform owns the customer-service application and supplies application-specific agents, capabilities, tools, identity context, and adapters.
+The CX platform owns the customer-service application and supplies application-specific agents, skills, tools, identity context, and adapters.
 
 https://github.com/etimbukafia/enterprise-agent-harness owns generic agent execution concerns such as:
 
 - provider boundaries;
 - governed runtime execution;
 - typed tool registration and invocation;
-- capability and agent registries;
+- skill and agent registries;
 - permission and policy enforcement;
 - approval pause/resume mechanics;
 - workflow state;
 - bounded runtime memory;
 - audit and execution traces.
 
-The CX platform must not implement an alternate generic tool loop, permission engine, capability registry, approval engine, or trace model.
+The CX platform must not implement an alternate generic tool loop, permission engine, skill registry, approval engine, or trace model.
+
+The support-agent manifest uses one `customer-support-prompt@1.0.0`, seven versioned Harness skills, direct executable `tool_refs`, and the CX support policy. Skill dependencies describe supported work; policy, permission, and approval checks remain the authority for execution.
 
 ### Cross-session memory
 
@@ -377,7 +379,7 @@ memory.write
 memory.dependency_failed
 ```
 
-Only emit `agent.capability_selected` if reliable runtime evidence exists for that fact.
+CX events do not emit an inferred skill-selection event. Use Harness trace provenance for the exact skills when that evidence is available.
 
 ### Event boundary
 
@@ -474,7 +476,7 @@ cx_platform/
 ├── persistence/    # CX SQLite repositories
 ├── integrations/   # mock-business and other external adapters
 ├── tools/          # https://github.com/etimbukafia/enterprise-agent-harness tool definitions/handlers
-├── agent/          # CX-specific agent configuration/capability assembly
+├── agent/          # CX-specific agent configuration/skill assembly
 ├── memory/         # LocalMemory + SenseLab adapter behind CX port
 └── main.py         # application composition root
 ```

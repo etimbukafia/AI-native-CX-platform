@@ -19,7 +19,8 @@ from enterprise_agent_harness import (
     ApprovalPolicy,
     ApprovalPolicyRule,
     BuiltAgent,
-    CapabilityRegistry,
+    ComponentReference,
+    ComponentType,
     DeterministicProvider,
     InMemoryApprovalBroker,
     InMemoryStateStore,
@@ -34,11 +35,11 @@ from enterprise_agent_harness import (
     ProviderProfile,
     RiskLevel,
     RuntimeConfig,
+    SkillRegistry,
     StateStore,
     ToolDescriptor,
     ToolKind,
     ToolRegistry,
-    VersionReference,
 )
 from enterprise_agent_harness import (
     MemoryScope as HarnessMemoryScope,
@@ -51,7 +52,12 @@ from cx_platform.memory.short_term import ConversationMemory
 if TYPE_CHECKING:
     from cx_platform.services.lifecycle import ConversationService
 
-from .capabilities import build_support_capabilities
+from .prompts import (
+    SUPPORT_PROMPT_ID,
+    SUPPORT_PROMPT_VERSION,
+    build_support_prompt_registry,
+)
+from .skills import build_support_skills
 
 SUPPORT_AGENT_ID = "customer-support-agent"
 SUPPORT_AGENT_VERSION = "1.0.0"
@@ -63,12 +69,7 @@ SUPPORT_MEMORY_STRATEGY_ID = "support-memory"
 SUPPORT_STATE_STRATEGY_ID = "support-runtime"
 
 SUPPORT_AGENT_GOAL = (
-    "Resolve supported customer-service requests with current evidence. "
-    "Use business tools for authoritative facts. Treat memory as advisory. "
-    "Do not invent order, shipment, payment, refund, return, or policy facts. "
-    "Do not claim an action succeeded before a tool result confirms it. "
-    "Clarify material ambiguity. Respect permissions, policies, and approvals. "
-    "Escalate when safe resolution is not available."
+    "Resolve supported commerce customer-service requests safely and accurately."
 )
 
 
@@ -190,7 +191,7 @@ class SupportAgentAssembly:
     agent: BuiltAgent
     factory: AgentFactory
     tools: ToolRegistry
-    capabilities: CapabilityRegistry
+    skills: SkillRegistry
     policy: PolicyDefinition
     approval_policy: ApprovalPolicy
     approval_broker: ApprovalBroker
@@ -323,7 +324,8 @@ def _build_support_assembly(
     from cx_platform.tools.support import build_support_tools
 
     tools = build_support_tools(client, conversations)
-    capabilities = build_support_capabilities(tools)
+    skills = build_support_skills(tools)
+    prompt_registry = build_support_prompt_registry()
     policy = build_support_policy()
     selected_approval_policy = approval_policy or build_support_approval_policy()
     broker = approval_broker or InMemoryApprovalBroker(
@@ -337,7 +339,12 @@ def _build_support_assembly(
         deterministic_arguments=deterministic_arguments,
     )
     runtime_store = runtime_state_store or InMemoryStateStore()
-    registry = AgentRegistry(capabilities=capabilities, tools=tools, policies=[policy])
+    registry = AgentRegistry(
+        prompts=prompt_registry,
+        skills=skills,
+        tools=tools,
+        policies=[policy],
+    )
     factory = AgentFactory(
         agent_registry=registry,
         providers={
@@ -361,24 +368,40 @@ def _build_support_assembly(
         version=_provider_version(selected_provider),
         model=_provider_model(selected_provider),
     )
-    references = [
-        VersionReference(component_id=tool.tool_id, version=tool.version)
+    tool_refs = [
+        ComponentReference(
+            component_type=ComponentType.TOOL,
+            component_id=tool.tool_id,
+            version=tool.version,
+        )
         for tool in tools.list()
+    ]
+    skill_refs = [
+        ComponentReference(
+            component_type=ComponentType.SKILL,
+            component_id=skill.skill_id,
+            version=skill.version,
+        )
+        for skill in skills.list()
     ]
     config = AgentConfig(
         identity=AgentVersion(agent_id=SUPPORT_AGENT_ID, version=SUPPORT_AGENT_VERSION),
         goal=SUPPORT_AGENT_GOAL,
         supported_intents=["customer_support"],
         supported_languages=["en"],
-        capabilities=[
-            VersionReference(
-                component_id=capability.capability_id, version=capability.version
+        prompt_ref=ComponentReference(
+            component_type=ComponentType.PROMPT,
+            component_id=SUPPORT_PROMPT_ID,
+            version=SUPPORT_PROMPT_VERSION,
+        ),
+        skill_refs=skill_refs,
+        tool_refs=tool_refs,
+        policy_refs=[
+            ComponentReference(
+                component_type=ComponentType.POLICY,
+                component_id=policy.policy_id,
+                version=policy.version,
             )
-            for capability in capabilities.list()
-        ],
-        allowed_tools=references,
-        policies=[
-            VersionReference(component_id=policy.policy_id, version=policy.version)
         ],
         provider_profile=profile,
         runtime_limits=RuntimeConfig(
@@ -403,7 +426,7 @@ def _build_support_assembly(
         agent=agent,
         factory=factory,
         tools=tools,
-        capabilities=capabilities,
+        skills=skills,
         policy=policy,
         approval_policy=selected_approval_policy,
         approval_broker=broker,
@@ -464,6 +487,8 @@ __all__ = [
     "SUPPORT_MEMORY_STRATEGY_ID",
     "SUPPORT_POLICY_ID",
     "SUPPORT_POLICY_VERSION",
+    "SUPPORT_PROMPT_ID",
+    "SUPPORT_PROMPT_VERSION",
     "SupportAgentAssembly",
     "SupportMemoryStrategy",
     "SupportProviderMode",

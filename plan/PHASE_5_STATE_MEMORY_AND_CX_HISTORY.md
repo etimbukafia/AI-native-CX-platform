@@ -271,7 +271,7 @@ Retrieve only a small number of relevant memories for a support execution.
 
 Apply simple constraints such as:
 
-- relevant capability or issue type;
+- relevant skill or issue type;
 - minimum confidence where supported;
 - bounded result count;
 - current support context.
@@ -282,7 +282,7 @@ Do not dump the whole memory space into the model context.
 
 - [ ] Define shared support-memory namespaces/entity paths.
 - [ ] Define typed memory payloads used by the CX application.
-- [ ] Map support capabilities to relevant memory searches.
+- [ ] Map support skills to relevant memory searches.
 - [ ] Bound retrieved results.
 - [ ] Preserve memory IDs/version/provenance in execution evidence where possible.
 - [ ] Treat retrieved memory as advisory context, not policy.

@@ -53,7 +53,7 @@ class MemoryEntry(BaseModel):
     scope: MemoryScope
     customer_id: str | None = Field(default=None, min_length=1)
     conversation_id: str | None = Field(default=None, min_length=1)
-    capability_id: str | None = Field(default=None, min_length=1)
+    skill_id: str | None = Field(default=None, min_length=1)
     provenance: MemoryProvenance
     advisory: Literal[True] = True
 

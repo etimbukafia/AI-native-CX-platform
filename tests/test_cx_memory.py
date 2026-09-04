@@ -61,7 +61,7 @@ def test_shared_memory_is_bounded_and_cannot_store_business_state_as_fact() -> N
             key=f"delivery_explanation_{number}",
             value="Explain the next shipment check clearly.",
             memory_type=MemoryKind.BELIEF,
-            capability_id="delivery_resolution",
+            skill_id="delivery_resolution",
         )
 
     with pytest.raises(ValueError, match="business state"):
@@ -71,13 +71,13 @@ def test_shared_memory_is_bounded_and_cannot_store_business_state_as_fact() -> N
             key="order_status",
             value="shipped",
             memory_type=MemoryKind.FACT,
-            capability_id="delivery_resolution",
+            skill_id="delivery_resolution",
         )
 
     results = memory.search_relevant(
         execution_id="exec_read",
         scope=MemoryScope.SHARED_SUPPORT,
-        capability_id="delivery_resolution",
+        skill_id="delivery_resolution",
         query="delivery",
         limit=3,
     )
@@ -229,7 +229,7 @@ def test_memory_failure_returns_safe_fallback_and_records_dependency_failure(tmp
         key="delivery_language",
         value="State the next check.",
         memory_type=MemoryKind.BELIEF,
-        capability_id="delivery_resolution",
+        skill_id="delivery_resolution",
     )
     resilient = ResilientMemory(
         FailingMemory(),
@@ -240,7 +240,7 @@ def test_memory_failure_returns_safe_fallback_and_records_dependency_failure(tmp
     results = resilient.search_relevant(
         execution_id="exec_failed",
         scope=MemoryScope.SHARED_SUPPORT,
-        capability_id="delivery_resolution",
+        skill_id="delivery_resolution",
     )
 
     assert [item.key for item in results] == ["delivery_language"]

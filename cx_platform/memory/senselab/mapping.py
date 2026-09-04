@@ -52,14 +52,14 @@ def build_search_request(
     *,
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
     query: str | None,
     min_confidence: float,
     limit: int,
 ) -> dict[str, object]:
     """Build the documented SenseLab search request."""
 
-    path = entity_path(scope, customer_id, capability_id)
+    path = entity_path(scope, customer_id, skill_id)
     if limit < 1 or limit > 20:
         raise ValueError("limit must be between 1 and 20")
     if not 0.0 <= min_confidence <= 1.0:
@@ -80,7 +80,7 @@ def build_write_request(
     *,
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
     key: str,
     value: str,
     memory_type: MemoryKind,
@@ -91,7 +91,7 @@ def build_write_request(
 ) -> dict[str, object]:
     """Build the documented SenseLab entry-write request."""
 
-    path = entity_path(scope, customer_id, capability_id)
+    path = entity_path(scope, customer_id, skill_id)
     validate_memory_write(
         scope=scope,
         key=key,
@@ -191,37 +191,37 @@ def validate_memory_write(
 def entity_path(
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
 ) -> str:
     """Return the CX namespace used by one memory scope."""
 
-    validate_scope(scope, customer_id, capability_id)
+    validate_scope(scope, customer_id, skill_id)
     if scope is MemoryScope.CUSTOMER:
         assert customer_id is not None
         return f"customers/{customer_id}"
-    assert capability_id is not None
-    return f"support/{capability_id}"
+    assert skill_id is not None
+    return f"support/{skill_id}"
 
 
 def validate_scope(
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
 ) -> None:
     """Require exactly one trusted identifier for a scoped namespace."""
 
     if scope is MemoryScope.CUSTOMER and (
         not customer_id
-        or capability_id is not None
+        or skill_id is not None
         or not _IDENTIFIER.fullmatch(customer_id or "")
     ):
         raise ValueError("customer memory requires only a customer ID")
     if scope is MemoryScope.SHARED_SUPPORT and (
-        not capability_id
+        not skill_id
         or customer_id is not None
-        or not _IDENTIFIER.fullmatch(capability_id or "")
+        or not _IDENTIFIER.fullmatch(skill_id or "")
     ):
-        raise ValueError("shared memory requires only a capability ID")
+        raise ValueError("shared memory requires only a skill ID")
 
 
 def map_search_response(
@@ -229,13 +229,13 @@ def map_search_response(
     *,
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
     execution_id: str,
 ) -> list[MemoryEntry]:
     """Map the documented search response, which is a list of entries."""
 
     rows = _required_entry_list(payload, "search")
-    expected_path = entity_path(scope, customer_id, capability_id)
+    expected_path = entity_path(scope, customer_id, skill_id)
     entries: list[MemoryEntry] = []
     for row in rows:
         if row.get("entity_path") != expected_path:
@@ -245,7 +245,7 @@ def map_search_response(
                 row,
                 scope=scope,
                 customer_id=customer_id,
-                capability_id=capability_id,
+                skill_id=skill_id,
                 execution_id=execution_id,
                 conversation_id=None,
                 operation=MemoryOperation.READ,
@@ -259,7 +259,7 @@ def map_write_response(
     *,
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
     key: str,
     execution_id: str,
     conversation_id: str | None,
@@ -267,14 +267,14 @@ def map_write_response(
     """Map the documented entry object returned by a write."""
 
     row = _required_entry_object(payload, "write")
-    expected_path = entity_path(scope, customer_id, capability_id)
+    expected_path = entity_path(scope, customer_id, skill_id)
     if row.get("entity_path") != expected_path or row.get("key") != key:
         raise MemoryResponseError("SenseLab write returned the wrong entry")
     return map_entry(
         row,
         scope=scope,
         customer_id=customer_id,
-        capability_id=capability_id,
+        skill_id=skill_id,
         execution_id=execution_id,
         conversation_id=conversation_id,
         operation=MemoryOperation.WRITE,
@@ -378,7 +378,7 @@ def map_entry(
     *,
     scope: MemoryScope,
     customer_id: str | None,
-    capability_id: str | None,
+    skill_id: str | None,
     execution_id: str,
     conversation_id: str | None,
     operation: MemoryOperation,
@@ -418,7 +418,7 @@ def map_entry(
         scope=scope,
         customer_id=customer_id,
         conversation_id=conversation_id,
-        capability_id=capability_id,
+        skill_id=skill_id,
         provenance=MemoryProvenance(
             provider="senselab",
             entry_id=entry_id,
