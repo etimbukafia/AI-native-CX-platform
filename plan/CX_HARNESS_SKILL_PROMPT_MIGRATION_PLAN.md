@@ -1,6 +1,6 @@
 # CX Harness Skill and Prompt Migration Plan
 
-Status: proposed implementation plan
+Status: implemented
 
 ## 1. Goal
 
@@ -87,14 +87,14 @@ Confirm the exact Harness contract before changing CX code.
 
 ## Tasks
 
-- [ ] Read `.agents/AGENTS.md`.
-- [ ] Inspect the current CX agent assembly.
-- [ ] Inspect the current CX support capability definitions.
-- [ ] Inspect the current Harness public API.
-- [ ] Inspect the current Harness skill, prompt, registry, factory, and manifest contracts.
-- [ ] Confirm the installed or referenced Harness version used by the CX project.
-- [ ] Confirm that current CX tests still target the old Capability API.
-- [ ] Record all CX files that need migration.
+- [x] Read `.agents/AGENTS.md`.
+- [x] Inspect the current CX agent assembly.
+- [x] Inspect the current CX support capability definitions.
+- [x] Inspect the current Harness public API.
+- [x] Inspect the current Harness skill, prompt, registry, factory, and manifest contracts.
+- [x] Confirm the installed or referenced Harness version used by the CX project.
+- [x] Confirm that current CX tests still target the old Capability API.
+- [x] Record all CX files that need migration.
 
 ## Required external source
 
@@ -148,12 +148,12 @@ Do not keep both files after migration.
 
 ## Tasks
 
-- [ ] Rename the CX capability module to `skills.py`.
-- [ ] Replace `CapabilityDefinition` with `SkillDefinition`.
-- [ ] Replace `CapabilityRegistry` with `SkillRegistry`.
-- [ ] Rename capability constants and helper functions.
-- [ ] Update imports in support-agent assembly and tests.
-- [ ] Update current documentation that refers to Harness capabilities as active CX artifacts.
+- [x] Rename the CX capability module to `skills.py`.
+- [x] Replace `CapabilityDefinition` with `SkillDefinition`.
+- [x] Replace `CapabilityRegistry` with `SkillRegistry`.
+- [x] Rename capability constants and helper functions.
+- [x] Update imports in support-agent assembly and tests.
+- [x] Update current documentation that refers to Harness capabilities as active CX artifacts.
 
 ## Exit criteria
 
@@ -247,12 +247,12 @@ Inspect current scenario behavior before final classification.
 
 ## Tasks
 
-- [ ] Define exact required and optional tool references for all seven skills.
-- [ ] Preserve current intents and language support where still correct.
-- [ ] Preserve CX ownership metadata.
-- [ ] Preserve risk semantics.
-- [ ] Register all seven skills as active when their required dependencies are valid.
-- [ ] Add behavior tests for skill registration and required dependency failure.
+- [x] Define exact required and optional tool references for all seven skills.
+- [x] Preserve current intents and language support where still correct.
+- [x] Preserve CX ownership metadata.
+- [x] Preserve risk semantics.
+- [x] Register all seven skills as active when their required dependencies are valid.
+- [x] Add behavior tests for skill registration and required dependency failure.
 
 ## Exit criteria
 
@@ -310,12 +310,12 @@ The prompt must not define permissions, approval authority, tenant identity, or 
 
 ## Tasks
 
-- [ ] Add prompt identity and version constants.
-- [ ] Add a support prompt builder or constant at the correct application boundary.
-- [ ] Create a `PromptRegistry` for support-agent assembly.
-- [ ] Register the exact active prompt.
-- [ ] Keep prompt instructions small enough for the configured Harness context budget.
-- [ ] Add behavior tests that prove the prompt is resolved through the Harness factory.
+- [x] Add prompt identity and version constants.
+- [x] Add a support prompt builder or constant at the correct application boundary.
+- [x] Create a `PromptRegistry` for support-agent assembly.
+- [x] Register the exact active prompt.
+- [x] Keep prompt instructions small enough for the configured Harness context budget.
+- [x] Add behavior tests that prove the prompt is resolved through the Harness factory.
 
 ## Exit criteria
 
@@ -386,18 +386,18 @@ Skill dependencies do not grant executable authority.
 
 ## Tasks
 
-- [ ] Build the prompt registry.
-- [ ] Build the skill registry.
-- [ ] Build exact prompt, skill, tool, and policy references.
-- [ ] Update `AgentRegistry` construction.
-- [ ] Update `AgentConfig` construction.
-- [ ] Preserve provider selection.
-- [ ] Preserve runtime limits.
-- [ ] Preserve approval configuration.
-- [ ] Preserve state-store wiring.
-- [ ] Preserve memory-strategy wiring.
-- [ ] Preserve permission-broker injection.
-- [ ] Preserve deterministic and live provider modes.
+- [x] Build the prompt registry.
+- [x] Build the skill registry.
+- [x] Build exact prompt, skill, tool, and policy references.
+- [x] Update `AgentRegistry` construction.
+- [x] Update `AgentConfig` construction.
+- [x] Preserve provider selection.
+- [x] Preserve runtime limits.
+- [x] Preserve approval configuration.
+- [x] Preserve state-store wiring.
+- [x] Preserve memory-strategy wiring.
+- [x] Preserve permission-broker injection.
+- [x] Preserve deterministic and live provider modes.
 
 ## Exit criteria
 
@@ -444,10 +444,10 @@ Do not expose extra registry internals without a current consumer.
 
 ## Tasks
 
-- [ ] Rename the assembly field.
-- [ ] Update services and tests that access it.
-- [ ] Remove old capability-specific typing.
-- [ ] Keep the assembly small.
+- [x] Rename the assembly field.
+- [x] Update services and tests that access it.
+- [x] Remove old capability-specific typing.
+- [x] Keep the assembly small.
 
 ## Exit criteria
 
@@ -478,11 +478,11 @@ Preserve these behaviors:
 
 ## Tasks
 
-- [ ] Run existing approval tests after migration.
-- [ ] Run existing permission-denial tests.
-- [ ] Run existing escalation tests.
-- [ ] Run exact approval pause/resume tests.
-- [ ] Verify no business write bypasses Harness tool execution.
+- [x] Run existing approval tests after migration.
+- [x] Run existing permission-denial tests.
+- [x] Run existing escalation tests.
+- [x] Run exact approval pause/resume tests.
+- [x] Verify no business write bypasses Harness tool execution.
 
 ## Exit criteria
 
@@ -530,11 +530,11 @@ Enterprise Agent Harness
 
 ## Tasks
 
-- [ ] Verify existing execution-reference linkage still works.
-- [ ] Verify `BuiltAgent.trace_for(execution_id)` still works.
-- [ ] Verify CX events do not duplicate prompt text.
-- [ ] Verify CX events do not claim inferred skill selection.
-- [ ] Update tests only where public Harness evidence contracts changed.
+- [x] Verify existing execution-reference linkage still works.
+- [x] Verify `BuiltAgent.trace_for(execution_id)` still works.
+- [x] Verify CX events do not duplicate prompt text.
+- [x] Verify CX events do not claim inferred skill selection.
+- [x] Update tests only where public Harness evidence contracts changed.
 
 ## Exit criteria
 
@@ -588,12 +588,12 @@ Use current terminology in active CX documentation.
 
 ## Tasks
 
-- [ ] Replace active Harness `capability` terminology with `skill` where it refers to the migrated artifact.
-- [ ] Preserve historical references where they describe completed historical work.
-- [ ] Update current architecture documentation.
-- [ ] Update the main backend build plan where the active architecture still says capability.
-- [ ] Update examples or comments that show obsolete Harness contracts.
-- [ ] Keep product-level wording clear where `capability` is used in its generic English meaning.
+- [x] Replace active Harness `capability` terminology with `skill` where it refers to the migrated artifact.
+- [x] Preserve historical references where they describe completed historical work.
+- [x] Update current architecture documentation.
+- [x] Update the main backend build plan where the active architecture still says capability.
+- [x] Update examples or comments that show obsolete Harness contracts.
+- [x] Keep product-level wording clear where `capability` is used in its generic English meaning.
 
 ## Important distinction
 
@@ -690,13 +690,13 @@ Before completion, run the repository quality checks that exist in the project.
 
 At minimum:
 
-- [ ] full test suite;
-- [ ] scenario acceptance suite;
-- [ ] compile/import checks;
-- [ ] type checks if configured;
-- [ ] lint checks if configured;
-- [ ] formatting checks if configured;
-- [ ] `git diff --check`.
+- [x] full test suite;
+- [x] scenario acceptance suite;
+- [x] compile/import checks;
+- [x] type checks if configured;
+- [x] lint checks if configured;
+- [x] formatting checks if configured;
+- [x] `git diff --check`.
 
 Do not finish with known failures.
 
